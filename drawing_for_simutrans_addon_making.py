@@ -3,6 +3,8 @@ from tkinter import filedialog, colorchooser
 from tkinter import ttk
 from PIL import Image, ImageTk
 import numpy as np
+import change_image_paksize
+import png_merge_for_simutrans
 
 
 class ImageEditor:
@@ -39,6 +41,13 @@ class ImageEditor:
         self.draw_color = np.array([0, 0, 0, 255], dtype=np.uint8)
 
         self.layer_panels = []
+        
+        # ---- Simutrans Settings ----
+        self.build_paksize = 128
+        self.play_paksize = 128
+        self.show_grid = True
+        self.base_offset_y = 0  # 菱形の上下オフセット
+        self.show_base_tile = True
 
         self.create_ui()
 
@@ -75,9 +84,24 @@ class ImageEditor:
         tk.Button(tab_edit, text="Undo", command=self.undo).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Redo", command=self.redo).pack(side=tk.LEFT)
 
-        tk.Button(bar, text="Pen", command=lambda: self.set_tool("pen")).pack(side=tk.LEFT)
-        tk.Button(bar, text="Eraser", command=lambda: self.set_tool("eraser")).pack(side=tk.LEFT)
-        tk.Button(bar, text="Pipette", command=lambda: self.set_tool("pipette")).pack(side=tk.LEFT)
+        # create_ui メソッド内、各ボタン作成部分を以下のように書き換え
+        self.tool_btns = {}
+
+        btn_pen = tk.Button(bar, text="Pen", command=lambda: self.set_tool("pen"))
+        btn_pen.pack(side=tk.LEFT)
+        self.tool_btns["pen"] = btn_pen
+
+        btn_eraser = tk.Button(bar, text="Eraser", command=lambda: self.set_tool("eraser"))
+        btn_eraser.pack(side=tk.LEFT)
+        self.tool_btns["eraser"] = btn_eraser
+
+        btn_pipette = tk.Button(bar, text="Pipette", command=lambda: self.set_tool("pipette"))
+        btn_pipette.pack(side=tk.LEFT)
+        self.tool_btns["pipette"] = btn_pipette
+
+        btn_move = tk.Button(bar, text="Move", command=lambda: self.set_tool("move"))
+        btn_move.pack(side=tk.LEFT)
+        self.tool_btns["move"] = btn_move
 
         tk.Button(tab_layer, text="New Layer", command=self.add_layer).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Duplicate Layer", command=self.duplicate_layer).pack(side=tk.LEFT)
@@ -102,7 +126,6 @@ class ImageEditor:
 
         tk.Button(off_ui_frame, text="Apply", command=self.apply_offset_entry).grid(row=0, column=4, padx=5)
         
-        tk.Button(bar, text="Move", command=lambda: self.set_tool("move")).pack(side=tk.LEFT)
         # オフセット操作用（長押し対応版）
         off_frame = tk.Frame(tab_layer)
         off_frame.pack(side=tk.LEFT, padx=10)
@@ -122,7 +145,29 @@ class ImageEditor:
             # マウスを離す、またはボタン外に出た時にループ停止
             btn.bind("<ButtonRelease-1>", self.stop_offset_loop)
             btn.bind("<Leave>", self.stop_offset_loop)
+        # --- Simutrans Config GUI ---
+        sim_frame = tk.LabelFrame(tab_process, text="Simutrans Guides")
+        sim_frame.pack(side=tk.LEFT, padx=5)
+        self.guide_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(sim_frame, text="Show", variable=self.guide_var, 
+                       command=self.update_sim_settings).grid(row=0, column=0)
 
+        tk.Label(sim_frame, text="Build:").grid(row=0, column=1)
+        self.build_entry = tk.Entry(sim_frame, width=4)
+        self.build_entry.insert(0, "128")
+        self.build_entry.grid(row=0, column=2)
+
+        tk.Label(sim_frame, text="Play:").grid(row=0, column=3)
+        self.play_entry = tk.Entry(sim_frame, width=4)
+        self.play_entry.insert(0, "128")
+        self.play_entry.grid(row=0, column=4)
+
+        tk.Label(sim_frame, text="Y-Off:").grid(row=0, column=5)
+        self.base_off_entry = tk.Entry(sim_frame, width=4)
+        self.base_off_entry.insert(0, "0")
+        self.base_off_entry.grid(row=0, column=6)
+
+        tk.Button(sim_frame, text="Apply", command=self.update_sim_settings).grid(row=0, column=7, padx=5)
         # color
         tk.Button(bar, text="Color", command=self.choose_color).pack(side=tk.LEFT)
         tk.Button(
@@ -135,6 +180,28 @@ class ImageEditor:
             text="Delete Background",
             command=self.delete_background_active_layer
         ).pack(side=tk.LEFT)
+        res_frame = tk.LabelFrame(tab_process, text="add margin (build_paksize)")
+        res_frame.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(res_frame, text="New Size:").grid(row=0, column=0)
+        self.new_build_entry = tk.Entry(res_frame, width=6)
+        self.new_build_entry.insert(0, str(self.build_paksize))
+        self.new_build_entry.grid(row=0, column=1)
+
+        tk.Button(res_frame, text="Apply Resize", 
+                  command=self.execute_canvas_resize,
+                  bg="#ffd0d0").grid(row=0, column=2, padx=5)
+        res_frame = tk.LabelFrame(tab_process, text="Image Resize")
+        res_frame.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(res_frame, text="New Size:").grid(row=0, column=0)
+        self.new_build_entry2 = tk.Entry(res_frame, width=6)
+        self.new_build_entry2.insert(0, str(self.build_paksize))
+        self.new_build_entry2.grid(row=0, column=1)
+
+        tk.Button(res_frame, text="Apply Resize", 
+                  command=self.execute_rescale,
+                  bg="#ffd0d0").grid(row=0, column=2, padx=5)
 
         self.alpha = tk.Scale(bar, from_=0, to=255, resolution=8,
                               orient=tk.HORIZONTAL, label="Alpha",
@@ -429,8 +496,20 @@ class ImageEditor:
         for i in range(len(self.layers)):
             self.save_layer(i)
     # ================= Tools =================
-    def set_tool(self, t):
-        self.tool = t
+    def set_tool(self, tool_name):
+        self.tool = tool_name
+        
+        # すべてのボタンの外見をデフォルトに戻す
+        for name, btn in self.tool_btns.items():
+            btn.config(relief=tk.RAISED, bg="SystemButtonFace") # 標準の背景色
+
+        # 選択されたツールだけ強調
+        if tool_name in self.tool_btns:
+            # relief=tk.SUNKEN で押し込まれた見た目にする
+            # bg="lightblue" などで色を変えるとより分かりやすい
+            self.tool_btns[tool_name].config(relief=tk.SUNKEN, bg="#ADD8E6")
+        
+        self.redraw()
 
     def choose_color(self):
         c = colorchooser.askcolor()
@@ -448,7 +527,92 @@ class ImageEditor:
         self.color_preview.create_rectangle(
             0, 0, 24, 24, fill=f"#{r:02x}{g:02x}{b:02x}", outline=""
         )
-    
+    def update_sim_settings(self):
+        try:
+            self.show_grid = self.guide_var.get()
+            self.build_paksize = int(self.build_entry.get())
+            p_size = int(self.play_entry.get())
+            
+            # play_paksize が build_paksize より大きい場合は制限
+            if p_size > self.build_paksize:
+                p_size = self.build_paksize
+                self.play_entry.delete(0, tk.END)
+                self.play_entry.insert(0, str(p_size))
+            
+            self.play_paksize = p_size
+            self.base_offset_y = int(self.base_off_entry.get())
+            
+            self.redraw()
+        except ValueError:
+            pass
+    def execute_canvas_resize(self):
+        try:
+            new_pak = int(self.new_build_entry.get())
+            old_pak = self.build_paksize
+            
+            if new_pak <= old_pak:
+                return
+
+            # 1. すべてのレイヤーの画像を変換
+            for layer in self.layers:
+                # 外部のプログラムを呼び出す
+                layer["img"] = change_image_paksize.change_paksize_program(layer["img"], old_pak, new_pak, 3)
+            
+            # 2. キャンバス自体のサイズ設定を更新
+            # ※全レイヤーが同じサイズになる前提の場合
+            self.width = int(self.width*new_pak/old_pak)
+            self.height = int(self.width*new_pak/old_pak)
+            self.build_paksize = new_pak
+            self.build_entry.delete(0, tk.END)
+            self.build_entry.insert(0, str(new_pak))
+            
+            # 3. UIの整合性をとる
+            self.update_sim_settings() # play_paksizeのバリデーション等
+            self.refresh_layer_panel()
+            self.redraw()
+            
+            print(f"Canvas resized to pak{new_pak}")
+            
+        except ValueError:
+            from tkinter import messagebox
+            messagebox.showerror("Error", "Valid paksize required")
+    def execute_rescale(self):
+        try:
+            new_pak = int(self.new_build_entry2.get())
+            old_pak = self.build_paksize
+            
+            if new_pak == old_pak:
+                return
+
+            # 1. すべてのレイヤーの画像を変換
+            for layer in self.layers:
+                # 外部のプログラムを呼び出す
+                layer["img"] = png_merge_for_simutrans.resize_program(layer["img"], old_pak, new_pak, 0,2)
+            
+            # 2. キャンバス自体のサイズ設定を更新
+            # ※全レイヤーが同じサイズになる前提の場合
+            self.width = int(self.width*new_pak/old_pak)
+            self.height = int(self.width*new_pak/old_pak)
+            self.play_paksize = int(self.play_paksize*new_pak/old_pak)
+            self.play_entry.delete(0, tk.END)
+            self.play_entry.insert(0, str(self.play_paksize))
+            self.build_paksize = new_pak
+            self.build_entry.delete(0, tk.END)
+            self.build_entry.insert(0, str(new_pak))
+            self.base_offset_y = int(self.base_offset_y*new_pak/old_pak)
+            self.base_off_entry.delete(0, tk.END)
+            self.base_off_entry.insert(0, str(self.base_offset_y))
+            
+            # 3. UIの整合性をとる
+            self.update_sim_settings() # play_paksizeのバリデーション等
+            self.refresh_layer_panel()
+            self.redraw()
+            
+            print(f"Canvas resized to pak{new_pak}")
+            
+        except ValueError:
+            from tkinter import messagebox
+            messagebox.showerror("Error", "Valid paksize required")
     # ================= Drawing =================
     def canvas_to_image(self, x, y):
         cx = self.canvas.canvasx(x)
@@ -726,12 +890,49 @@ class ImageEditor:
         # 新しい座標がマウスの元の位置（e.x, e.y）に来るようにスクロール
         self.canvas.xview_moveto((new_mx - e.x) / (self.width * self.zoom))
         self.canvas.yview_moveto((new_my - e.y) / (self.height * self.zoom))
+        self.redraw()
     def start_pan(self, e):
         self.canvas.scan_mark(e.x, e.y)
 
     def pan(self, e):
         self.canvas.scan_dragto(e.x, e.y, gain=1)
         self.redraw()
+    def draw_simutrans_guides(self):
+        # ズームに応じたサイズ
+        b_size = self.build_paksize * self.zoom
+        p_size = self.play_paksize * self.zoom
+        
+        zw, zh = int(self.width * self.zoom), int(self.height * self.zoom)
+
+        # 1. build_paksize ごとの区切り線
+        for x in range(0, zw + 1, int(b_size)):
+            self.canvas.create_line(x, 0, x, zh, fill="cyan", dash=(4, 4), tags="guide")
+        for y in range(0, zh + 1, int(b_size)):
+            self.canvas.create_line(0, y, zw, y, fill="cyan", dash=(4, 4), tags="guide")
+
+        # 2. play_paksize に準拠したベースタイル（菱形）の描画
+        # 各ビルド用正方形の中心から下側に配置
+        if self.show_base_tile:
+            for bx in range(0, int(self.width / self.build_paksize)):
+                for by in range(0, int(self.height / self.build_paksize)):
+                    # ビルド用正方形の中心（画像座標）
+                    cx = (bx * self.build_paksize + self.build_paksize / 2) * self.zoom
+                    # 中心点から下側にplay_paksize分確保するための基準点
+                    cy = (by * self.build_paksize + self.build_paksize / 2) * self.zoom + self.base_offset_y * self.zoom
+                    
+                    # 菱形の頂点計算 (play_paksizeの半分を半径とする)
+                    r_w = p_size / 2 
+                    r_h = p_size / 4
+                    
+                    # 下側に基準を置くため、中心(cx, cy)から菱形を描画
+                    # Simutransのタイル接地形状（菱形）
+                    points = [
+                        cx, cy,       # 上
+                        cx + r_w, cy + r_h,       # 右
+                        cx, cy + 2*r_h,       # 下
+                        cx - r_w, cy + r_h       # 左
+                    ]
+                    self.canvas.create_polygon(points, fill="", outline="yellow", width=1, tags="guide")
 
     # ================= Rendering =================
     def redraw(self):
@@ -786,13 +987,18 @@ class ImageEditor:
         # 6. Canvasに描画
         self.tkimg = ImageTk.PhotoImage(bg_pil)
         self.canvas.delete("all")
-        
+
         self.canvas.create_image(
             self.canvas.canvasx(0), 
             self.canvas.canvasy(0), 
             image=self.tkimg, 
             anchor="nw"
         )
+
+        # ---- Simutrans 補助線の描画 ----
+        self.canvas.delete("fixed_guide") # 古いガイドだけを消去
+        if self.show_grid:
+            self.draw_simutrans_guides()
 
         # 全体サイズを維持
         zw, zh = int(self.width * self.zoom), int(self.height * self.zoom)
