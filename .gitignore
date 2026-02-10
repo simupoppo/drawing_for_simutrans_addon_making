@@ -2,3 +2,4 @@ work
 dist
 *.spec
 nul
+__pycache__
