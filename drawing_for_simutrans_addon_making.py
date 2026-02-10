@@ -15,6 +15,8 @@ class ImageEditor:
         self.active_layer = 0
         self.width = 0
         self.height = 0
+        self.bg_pattern = self.create_base_tile() # 背景タイルを生成
+        self.canvas_bg_ids = [] # 背景タイルオブジェクトのIDリスト
 
         # ---- undo / redo ----
         self.undo_stack = []
@@ -122,7 +124,7 @@ class ImageEditor:
         self.layer_frame.pack(side=tk.LEFT, fill=tk.Y)
 
         # ---- canvas ----
-        self.canvas = tk.Canvas(body, bg="#808080", highlightthickness=0,
+        self.canvas = tk.Canvas(body, bd=0, highlightthickness=0,
                                 xscrollcommand=self.hbar.set,
                                 yscrollcommand=self.vbar.set)
         self.canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
@@ -144,7 +146,16 @@ class ImageEditor:
         self.canvas.bind("<Configure>", lambda e: self.redraw())
         self.canvas.bind("<Button-3>", self.start_pan)
         self.canvas.bind("<B3-Motion>", self.pan)
-
+    def create_base_tile(self):
+        """16x16pxの固定市松模様タイルを生成"""
+        size = 8 # 1マスのサイズ。16x16のタイル内に4マス入る
+        c1, c2 = (220, 220, 220, 255), (190, 190, 190, 255)
+        data = np.zeros((size * 2, size * 2, 4), dtype=np.uint8)
+        data[:size, :size] = c1
+        data[size:, size:] = c1
+        data[:size, size:] = c2
+        data[size:, :size] = c2
+        return ImageTk.PhotoImage(Image.fromarray(data, "RGBA"))
     # ================= Image I/O =================
     def open_image(self):
         path = filedialog.askopenfilename(filetypes=[("PNG", "*.png")])
@@ -175,7 +186,8 @@ class ImageEditor:
         if not self.layers:
             return
 
-        out = self.compose_layers()
+        # 本来の色で合成
+        out = self.compose_layers(for_display=False)
         path = filedialog.asksaveasfilename(defaultextension=".png")
         if path:
             Image.fromarray(out, "RGBA").save(path)
@@ -228,7 +240,16 @@ class ImageEditor:
             if idx == self.active_layer:
                 f.config(bg="#a0c0ff")
 
-    def compose_layers(self):
+    def compose_layers(self, for_display=True):
+        """
+        レイヤーを合成する。
+        for_display=True のときは非アクティブレイヤーを暗くし、
+        for_display=False のときは本来の色でマージする。
+        """
+        # レイヤーがない場合は空の画像を返す
+        if not self.layers:
+            return np.zeros((self.height, self.width, 4), dtype=np.uint8)
+
         out = np.zeros_like(self.layers[0]["img"], dtype=np.float32)
 
         for i, layer in enumerate(self.layers):
@@ -237,9 +258,11 @@ class ImageEditor:
 
             src = layer["img"].astype(np.float32)
 
-            if i != self.active_layer:
+            # --- 表示用の場合のみ、非アクティブレイヤーを暗くする ---
+            if for_display and i != self.active_layer:
                 src[..., :3] *= self.inactive_dim_factor
 
+            # アルファブレンド処理
             alpha = src[..., 3:4] / 255.0
             out[..., :3] = out[..., :3] * (1 - alpha) + src[..., :3] * alpha
             out[..., 3:4] = np.maximum(out[..., 3:4], src[..., 3:4])
@@ -480,52 +503,126 @@ class ImageEditor:
 
     # ================= View =================
     def set_zoom_index(self, v):
+        # 1. 現在の表示中心（比率 0.0 ~ 1.0）を記録
+        # xview() は (現在の表示開始比率, 現在の表示終了比率) を返す
+        x_left, x_right = self.canvas.xview()
+        y_top, y_bottom = self.canvas.yview()
+        
+        center_x = (x_left + x_right) / 2
+        center_y = (y_top + y_bottom) / 2
+
+        # 2. ズーム倍率を更新
         self.zoom = self.zoom_levels[int(v)] / 100.0
         self.zoom_label.config(text=f"{self.zoom_levels[int(v)]}%")
+        
+        # 3. 再描画（ここで scrollregion が更新される）
         self.redraw()
 
+        # 4. 記録しておいた中心位置へスクロールを戻す
+        # movetoは「表示領域の左端」を指定するため、中心から表示幅の半分を引く
+        view_width = x_right - x_left
+        view_height = y_bottom - y_top
+        
+        self.canvas.xview_moveto(center_x - view_width / 2)
+        self.canvas.yview_moveto(center_y - view_height / 2)
+
     def zoom_wheel(self, e):
+        # ズーム前のマウス下のピクセル座標を記録
+        mx = self.canvas.canvasx(e.x)
+        my = self.canvas.canvasy(e.y)
+
+        # ズーム倍率変更
         i = self.zoom_scale.get()
+        old_zoom = self.zoom
         if e.delta > 0 and i < len(self.zoom_levels) - 1:
             i += 1
         elif e.delta < 0 and i > 0:
             i -= 1
-        self.zoom_scale.set(i)
+        
+        if i == self.zoom_scale.get(): return
+        
+        self.zoom_scale.set(i) # これで redraw() が呼ばれる
+        self.zoom = self.zoom_levels[i] / 100.0
 
+        # ズーム後の「マウスがあったピクセル」の新しいCanvas座標
+        new_mx = mx * (self.zoom / old_zoom)
+        new_my = my * (self.zoom / old_zoom)
+
+        # 新しい座標がマウスの元の位置（e.x, e.y）に来るようにスクロール
+        self.canvas.xview_moveto((new_mx - e.x) / (self.width * self.zoom))
+        self.canvas.yview_moveto((new_my - e.y) / (self.height * self.zoom))
     def start_pan(self, e):
         self.canvas.scan_mark(e.x, e.y)
 
     def pan(self, e):
         self.canvas.scan_dragto(e.x, e.y, gain=1)
-        self.update_footer()
+        self.redraw()
 
     # ================= Rendering =================
     def redraw(self):
-        if not self.layers:
+        if not self.layers or self.width == 0:
             return
 
-        img = self.compose_layers()
-        h, w = img.shape[:2]
+        # 1. 表示範囲の取得
+        x_start, x_end = self.canvas.xview()
+        y_start, y_end = self.canvas.yview()
 
-        # 1. ズーム後のサイズを計算 (scrollregionの設定より先に! )
-        zw = int(w * self.zoom)
-        zh = int(h * self.zoom)
+        # 2. 画像上の座標に変換
+        ix1 = int(x_start * self.width)
+        iy1 = int(y_start * self.height)
+        ix2 = int(np.ceil(x_end * self.width))
+        iy2 = int(np.ceil(y_end * self.height))
+
+        ix1, iy1 = max(0, ix1), max(0, iy1)
+        ix2, iy2 = min(self.width, ix2), min(self.height, iy2)
+
+        if ix2 <= ix1 or iy2 <= iy1: return
+
+        # 3. 表示範囲を切り出し
+        img_full = self.compose_layers()
+        img_crop = img_full[iy1:iy2, ix1:ix2]
+
+        crop_h, crop_w = img_crop.shape[:2]
+        disp_w = int(crop_w * self.zoom)
+        disp_h = int(crop_h * self.zoom)
+
+        # 4. 背景の市松模様を生成 (エラー修正ポイント)
+        bg_size = 8
+        yy, xx = np.indices((disp_h, disp_w))
         
-        # 2. Canvasのスクロール可能範囲を更新
-        self.canvas.config(scrollregion=(0, 0, zw, zh))
+        # オフセット計算（スクロールしても模様がズレないように調整）
+        offset_x = int(ix1 * self.zoom) % (bg_size * 2)
+        offset_y = int(iy1 * self.zoom) % (bg_size * 2)
+        
+        checker = ((xx + offset_x) // bg_size + (yy + offset_y) // bg_size) % 2
+        
+        # 3チャンネル(RGB)の配列を確実に作成
+        bg_rgb = np.zeros((disp_h, disp_w, 3), dtype=np.uint8)
+        bg_rgb[checker == 0] = [220, 220, 220] # 明るいグレー
+        bg_rgb[checker == 1] = [190, 190, 190] # 濃いグレー
+        
+        # PILに変換してからRGBAに
+        bg_pil = Image.fromarray(bg_rgb, "RGB").convert("RGBA")
 
-        # 3. 画像のリサイズと描画
-        pil = Image.fromarray(img, "RGBA").resize((zw, zh), Image.NEAREST)
-        self.tkimg = ImageTk.PhotoImage(pil)
+        # 5. 前景を合成
+        fg_pil = Image.fromarray(img_crop, "RGBA").resize((disp_w, disp_h), Image.NEAREST)
+        bg_pil.alpha_composite(fg_pil)
 
+        # 6. Canvasに描画
+        self.tkimg = ImageTk.PhotoImage(bg_pil)
         self.canvas.delete("all")
-        # スクロールバー制御時は 0,0 に描画するのが正解です
+        
         self.canvas.create_image(
-            0, 0,
-            image=self.tkimg,
+            self.canvas.canvasx(0), 
+            self.canvas.canvasy(0), 
+            image=self.tkimg, 
             anchor="nw"
         )
 
+        # 全体サイズを維持
+        zw, zh = int(self.width * self.zoom), int(self.height * self.zoom)
+        self.canvas.config(scrollregion=(0, 0, zw, zh))
+        
         self.update_footer()
 
     def update_cursor_info(self, e):
