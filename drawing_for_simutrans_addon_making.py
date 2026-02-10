@@ -38,9 +38,16 @@ class ImageEditor:
 
         # ---- tool ----
         self.tool = "pen"
+        self.floating_image = None  # ペースト中の画像(numpy)
+        self.floating_pos = [0, 0]  # ペースト中の左上座標 [x, y]
+        self.is_dragging_floating = False
         self.draw_color = np.array([0, 0, 0, 255], dtype=np.uint8)
 
         self.layer_panels = []
+        # ---- selection ----
+        self.selection_rect = None  # [x1, y1, x2, y2] (キャンバス上のピクセル座標)
+        self.clipboard = None       # コピーされた画像データ (ndarray)
+        self.selection_id = None    # キャンバス上の枠オブジェクトID
         
         # ---- Simutrans Settings ----
         self.build_paksize = 128
@@ -102,6 +109,15 @@ class ImageEditor:
         btn_move = tk.Button(bar, text="Move", command=lambda: self.set_tool("move"))
         btn_move.pack(side=tk.LEFT)
         self.tool_btns["move"] = btn_move
+
+        # ツールバーに追加
+        btn_select = tk.Button(bar, text="Select", command=lambda: self.set_tool("select"))
+        btn_select.pack(side=tk.LEFT)
+        self.tool_btns["select"] = btn_select
+
+        # Editタブに追加
+        tk.Button(tab_edit, text="Copy", command=self.copy_selection).pack(side=tk.LEFT)
+        tk.Button(tab_edit, text="Paste", command=self.paste_image).pack(side=tk.LEFT)
 
         tk.Button(tab_layer, text="New Layer", command=self.add_layer).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Duplicate Layer", command=self.duplicate_layer).pack(side=tk.LEFT)
@@ -257,6 +273,15 @@ class ImageEditor:
         self.canvas.bind("<Configure>", lambda e: self.redraw())
         self.canvas.bind("<Button-3>", self.start_pan)
         self.canvas.bind("<B3-Motion>", self.pan)
+        self.root.bind("<Control-c>", lambda e: self.copy_selection())
+        self.root.bind("<Control-v>", lambda e: self.paste_image())
+        self.root.bind("<Control-z>", lambda e: self.undo())
+        self.root.bind("<Control-y>", lambda e: self.redo())
+        self.root.bind("<Escape>", self.clear_selection)
+
+    def clear_selection(self, event=None):
+        self.selection_rect = None
+        self.redraw()
     def create_base_tile(self):
         """16x16pxの固定市松模様タイルを生成"""
         size = 8 # 1マスのサイズ。16x16のタイル内に4マス入る
@@ -508,6 +533,8 @@ class ImageEditor:
             # relief=tk.SUNKEN で押し込まれた見た目にする
             # bg="lightblue" などで色を変えるとより分かりやすい
             self.tool_btns[tool_name].config(relief=tk.SUNKEN, bg="#ADD8E6")
+        if tool_name!="select":
+            self.clear_selection()
         
         self.redraw()
 
@@ -625,7 +652,9 @@ class ImageEditor:
         self.current_stroke = []
 
         ix, iy = self.canvas_to_image(e.x, e.y)
-
+        if self.tool == "select":
+            self.selection_rect = [ix, iy, ix, iy]
+            return
         if self.tool == "move":
             # ドラッグ開始時のマウス位置と現在のオフセットを記録
             layer = self.layers[self.active_layer]
@@ -647,6 +676,12 @@ class ImageEditor:
         if self.tool == "pipette":
             return
         ix, iy = self.canvas_to_image(e.x, e.y)
+        if self.tool == "select":
+            if self.selection_rect:
+                self.selection_rect[2] = ix
+                self.selection_rect[3] = iy
+                self.redraw()
+            return
         if self.tool == "move":
             dx = ix - self.drag_start_pos[0]
             dy = iy - self.drag_start_pos[1]
@@ -658,6 +693,11 @@ class ImageEditor:
             self.paint(ix, iy, self.tool == "eraser")
 
     def end_stroke(self, _):
+        if self.tool == "select" and self.selection_rect:
+            x1, y1, x2, y2 = self.selection_rect
+            if x1 == x2 or y1 == y2:
+                self.selection_rect = None
+                self.redraw()
         if self.current_stroke:
             self.undo_stack.append(self.current_stroke)
             self.redo_stack.clear()
@@ -758,12 +798,145 @@ class ImageEditor:
         layer[mask] = replace
 
         self.redraw()
+    def copy_selection(self):
+        """選択範囲をOSのクリップボードに画像としてコピー"""
+        from PIL import Image
+        import io
+        try:
+            import win32clipboard
+            import win32con
+        except ImportError:
+            win32clipboard = None
+        except ImportError:
+            win32clipboard = None
+
+        if not self.selection_rect or not self.layers:
+            return
+
+        x1, y1, x2, y2 = self.selection_rect
+        sx, ex = sorted([x1, x2])
+        sy, ey = sorted([y1, y2])
+
+        layer_dict = self.layers[self.active_layer]
+        img = layer_dict["img"]
+        ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
+
+        # レイヤー相対座標
+        lx1, ly1 = max(0, sx - ox), max(0, sy - oy)
+        lx2, ly2 = min(img.shape[1], ex - ox), min(img.shape[0], ey - oy)
+
+        if lx2 > lx1 and ly2 > ly1:
+            clip_np = img[ly1:ly2, lx1:lx2].copy()
+            self.clipboard = clip_np  # 内部バッファに保持
+            
+            # OSクリップボード (Windows) への書き出し
+            if win32clipboard:
+                clip_img = Image.fromarray(clip_np, "RGBA")
+                
+                # 1. PNG形式のバイナリを作成（透過保持用）
+                png_output = io.BytesIO()
+                clip_img.save(png_output, format="PNG")
+                png_data = png_output.getvalue()
+                png_output.close()
+
+                # 2. DIB形式（透過なし互換用）
+                dib_output = io.BytesIO()
+                clip_img.convert("RGB").save(dib_output, "BMP")
+                dib_data = dib_output.getvalue()[14:]
+                dib_output.close()
+
+                try:
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    
+                    # PNG形式を登録してセット（最近のアプリ用）
+                    fmt_png = win32clipboard.RegisterClipboardFormat("PNG")
+                    win32clipboard.SetClipboardData(fmt_png, png_data)
+                    
+                    # 標準的なDIBもセット（古いアプリ用）
+                    win32clipboard.SetClipboardData(win32con.CF_DIB, dib_data)
+                    
+                    win32clipboard.CloseClipboard()
+                    print("Copied to system clipboard (with alpha).")
+                except Exception as e:
+                    print(f"Clipboard error: {e}")
+
+    def paste_image(self):
+        """OSのクリップボードまたは内部バッファからアクティブレイヤーへ貼り付け"""
+        from PIL import Image, ImageGrab
+        
+        # 1. まずOSのクリップボード（他アプリからの画像）を試す
+        try:
+            pasted_img = ImageGrab.grabclipboard()
+        except Exception:
+            pasted_img = None
+
+        if isinstance(pasted_img, Image.Image):
+            clip_np = np.array(pasted_img.convert("RGBA"), dtype=np.uint8)
+        elif self.clipboard is not None:
+            # OS側になければ自作エディタ内の内部バッファを使用
+            clip_np = self.clipboard
+        else:
+            return
+
+        # 2. 貼り付け先レイヤーの情報
+        layer_dict = self.layers[self.active_layer]
+        target_img = layer_dict["img"]
+        th, tw = target_img.shape[:2]
+        ch, cw = clip_np.shape[:2]
+
+        # 3. 貼り付け位置の決定（選択範囲の左上、なければ 0,0）
+        px, py = 0, 0
+        if self.selection_rect:
+            px = min(self.selection_rect[0], self.selection_rect[2])
+            py = min(self.selection_rect[1], self.selection_rect[3])
+        
+        ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
+        lx, ly = px - ox, py - oy
+
+        # 4. 書き込み範囲の計算
+        x1, y1 = max(0, lx), max(0, ly)
+        x2, y2 = min(tw, lx + cw), min(th, ly + ch)
+        
+        if x2 > x1 and y2 > y1:
+            # --- Undoの保存 ---
+            # 既存の1ピクセルずつのUndoスタックと整合性をとるため
+            # 貼り付け範囲の「変更前ピクセル」をすべてスタックに積む
+            patch_undo = []
+            sx1, sy1 = x1 - lx, y1 - ly
+            
+            for dy in range(y2 - y1):
+                for dx in range(x2 - x1):
+                    # (layer_idx, abs_x, abs_y, before_color)
+                    patch_undo.append((
+                        self.active_layer, 
+                        x1 + dx + ox, 
+                        y1 + dy + oy, 
+                        target_img[y1 + dy, x1 + dx].copy()
+                    ))
+            
+            self.undo_stack.append(patch_undo)
+            self.redo_stack.clear()
+
+            # --- 貼り付け実行 ---
+            sx2, sy2 = sx1 + (x2 - x1), sy1 + (y2 - y1)
+            target_img[y1:y2, x1:x2] = clip_np[sy1:sy2, sx1:sx2]
+            
+            self.redraw()
+            print("Pasted to active layer.")
 
     # ================= Undo / Redo =================
     def undo(self):
-        if not self.undo_stack:
-            return
+        if not self.undo_stack: return
         stroke = self.undo_stack.pop()
+
+        # もし stroke が辞書形式（レイヤー全体のバックアップ）なら
+        if isinstance(stroke, dict) and "full_img" in stroke:
+            l_idx = stroke["layer_idx"]
+            current_back = self.layers[l_idx]["img"].copy()
+            self.layers[l_idx]["img"] = stroke["full_img"]
+            self.redo_stack.append({"layer_idx": l_idx, "full_img": current_back})
+            return
 
         if isinstance(stroke, tuple) and stroke[0] == "move_layer":
             _, src, dst = stroke
@@ -994,6 +1167,19 @@ class ImageEditor:
             image=self.tkimg, 
             anchor="nw"
         )
+        
+        self.canvas.delete("selection_ui")
+        if self.tool == "select" and self.selection_rect:
+            x1, y1, x2, y2 = self.selection_rect
+            # ズームを考慮した座標
+            zx1, zy1 = x1 * self.zoom, y1 * self.zoom
+            zx2, zy2 = x2 * self.zoom, y2 * self.zoom
+            
+            # 白黒の点線にすることで、どんな背景でも見やすくする
+            self.canvas.create_rectangle(zx1, zy1, zx2, zy2, 
+                                         outline="white", dash=(4, 4), tags="selection_ui")
+            self.canvas.create_rectangle(zx1, zy1, zx2, zy2, 
+                                         outline="black", dash=(4, 4), dashoffset=4, tags="selection_ui")
 
         # ---- Simutrans 補助線の描画 ----
         self.canvas.delete("fixed_guide") # 古いガイドだけを消去
