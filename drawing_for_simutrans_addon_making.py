@@ -22,10 +22,13 @@ class ImageEditor:
         self.undo_stack = []
         self.redo_stack = []
         self.current_stroke = []
+        self.after_id = None
 
         # ---- view ----
         self.zoom_levels = [25, 50, 100, 200, 400, 600, 800, 1000]
         self.zoom = 1.0
+        self.cursor_x = None  # 初期化を追加
+        self.cursor_y = None  # 初期化を追加
         self.view_x = 0
         self.view_y = 0
         self.pan_start = None
@@ -78,8 +81,49 @@ class ImageEditor:
 
         tk.Button(tab_layer, text="New Layer", command=self.add_layer).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Duplicate Layer", command=self.duplicate_layer).pack(side=tk.LEFT)
+        tk.Button(tab_layer, text="Delete Layer", command=self.delete_layer).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="▲ Up", command=self.move_layer_up).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="▼ Down", command=self.move_layer_down).pack(side=tk.LEFT)
+        # レイヤー操作タブなどに追加
+        tk.Button(tab_layer, text="Export Layer", command=lambda:self.save_layer(-1)).pack(side=tk.LEFT)
+        tk.Button(tab_layer, text="Export All Layer", command=self.save_all_layers).pack(side=tk.LEFT)
+        tk.Button(tab_layer, text="Import to Layer", command=self.import_to_layer).pack(side=tk.LEFT)
+        # --- Offset GUI ---
+        off_ui_frame = tk.LabelFrame(tab_layer, text="Layer Offset")
+        off_ui_frame.pack(side=tk.LEFT, padx=5, pady=2)
+
+        tk.Label(off_ui_frame, text="X:").grid(row=0, column=0)
+        self.off_x_entry = tk.Entry(off_ui_frame, width=5)
+        self.off_x_entry.grid(row=0, column=1)
+
+        tk.Label(off_ui_frame, text="Y:").grid(row=0, column=2)
+        self.off_y_entry = tk.Entry(off_ui_frame, width=5)
+        self.off_y_entry.grid(row=0, column=3)
+
+        tk.Button(off_ui_frame, text="Apply", command=self.apply_offset_entry).grid(row=0, column=4, padx=5)
+        
+        tk.Button(bar, text="Move", command=lambda: self.set_tool("move")).pack(side=tk.LEFT)
+        # オフセット操作用（長押し対応版）
+        off_frame = tk.Frame(tab_layer)
+        off_frame.pack(side=tk.LEFT, padx=10)
+
+        directions = [
+            ("←", -1, 0, 1, 0),
+            ("↑", 0, -1, 0, 1),
+            ("↓", 0, 1, 2, 1),
+            ("→", 1, 0, 1, 2)
+        ]
+
+        for text, dx, dy, r, c in directions:
+            btn = tk.Button(off_frame, text=text)
+            btn.grid(row=r, column=c)
+            # マウス左ボタン押し下げでループ開始
+            btn.bind("<ButtonPress-1>", lambda e, x=dx, y=dy: self.start_offset_loop(x, y))
+            # マウスを離す、またはボタン外に出た時にループ停止
+            btn.bind("<ButtonRelease-1>", self.stop_offset_loop)
+            btn.bind("<Leave>", self.stop_offset_loop)
+
+        # color
         tk.Button(bar, text="Color", command=self.choose_color).pack(side=tk.LEFT)
         tk.Button(
             tab_process,
@@ -240,32 +284,47 @@ class ImageEditor:
             if idx == self.active_layer:
                 f.config(bg="#a0c0ff")
 
+    def delete_layer(self):
+        if len(self.layers) <= 1:
+            return # 最後の1枚は消さない
+        
+        self.layers.pop(self.active_layer)
+        self.active_layer = max(0, self.active_layer - 1)
+        self.refresh_layer_panel()
+        self.redraw()
+
     def compose_layers(self, for_display=True):
-        """
-        レイヤーを合成する。
-        for_display=True のときは非アクティブレイヤーを暗くし、
-        for_display=False のときは本来の色でマージする。
-        """
-        # レイヤーがない場合は空の画像を返す
         if not self.layers:
             return np.zeros((self.height, self.width, 4), dtype=np.uint8)
 
-        out = np.zeros_like(self.layers[0]["img"], dtype=np.float32)
+        # キャンバスサイズの出力バッファ
+        out = np.zeros((self.height, self.width, 4), dtype=np.float32)
 
         for i, layer in enumerate(self.layers):
-            if not layer["visible"]:
-                continue
-
+            if not layer["visible"]: continue
+            
+            # 各レイヤーの現在の位置とサイズを取得
             src = layer["img"].astype(np.float32)
+            lh, lw = src.shape[:2]
+            ox, oy = layer.get("off_x", 0), layer.get("off_y", 0)
 
-            # --- 表示用の場合のみ、非アクティブレイヤーを暗くする ---
-            if for_display and i != self.active_layer:
-                src[..., :3] *= self.inactive_dim_factor
+            # キャンバスとレイヤーが重なる範囲を計算（非破壊の鍵）
+            x1, y1 = max(0, ox), max(0, oy)
+            x2, y2 = min(self.width, ox + lw), min(self.height, oy + lh)
 
-            # アルファブレンド処理
-            alpha = src[..., 3:4] / 255.0
-            out[..., :3] = out[..., :3] * (1 - alpha) + src[..., :3] * alpha
-            out[..., 3:4] = np.maximum(out[..., 3:4], src[..., 3:4])
+            if x2 > x1 and y2 > y1:
+                # 転送元（レイヤー画像）のどの部分を使うか
+                sx1, sy1 = x1 - ox, y1 - oy
+                sx2, sy2 = sx1 + (x2 - x1), sy1 + (y2 - y1)
+                
+                crop = src[sy1:sy2, sx1:sx2]
+                
+                if for_display and i != self.active_layer:
+                    crop[..., :3] *= self.inactive_dim_factor
+
+                alpha = crop[..., 3:4] / 255.0
+                out[y1:y2, x1:x2, :3] = out[y1:y2, x1:x2, :3] * (1 - alpha) + crop[..., :3] * alpha
+                out[y1:y2, x1:x2, 3:4] = np.maximum(out[y1:y2, x1:x2, 3:4], crop[..., 3:4])
 
         return np.clip(out, 0, 255).astype(np.uint8)
     def duplicate_layer(self):
@@ -315,6 +374,60 @@ class ImageEditor:
         self.active_layer = i - 1
         self.refresh_layer_panel()
         self.redraw()
+    def import_to_layer(self):
+        if not self.layers:
+            return
+            
+        path = filedialog.askopenfilename(filetypes=[("PNG", "*.png")])
+        if not path:
+            return
+
+        # 1. 読み込み画像をそのままNumPy配列にする
+        import_img = Image.open(path).convert("RGBA")
+        import_np = np.array(import_img, dtype=np.uint8)
+
+        # 2. 新しいレイヤーとして追加（切り抜かず、オフセット0で配置）
+        self.layers.append({
+            "img": import_np,   # 画像データそのもの
+            "visible": True,
+            "off_x": 0,         # 表示開始位置X
+            "off_y": 0          # 表示開始位置Y
+        })
+        
+        self.active_layer = len(self.layers) - 1
+        self.refresh_layer_panel()
+        self.redraw()
+    def offset_layer(self, dx, dy):
+        """オフセット値を更新してレイヤーを移動させる（非破壊）"""
+        if not self.layers:
+            return
+            
+        layer = self.layers[self.active_layer]
+        layer["off_x"] = layer.get("off_x", 0) + dx
+        layer["off_y"] = layer.get("off_y", 0) + dy
+        
+        self.redraw()
+    def save_layer(self,which):
+        if not self.layers:
+            return
+        if(which<0):
+            # call active layer
+            which = self.active_layer
+        
+        layer_img = self.layers[which]["img"]
+        path = filedialog.asksaveasfilename(
+            title="選択中のレイヤーを保存",
+            defaultextension=".png",
+            filetypes=[("PNG", "*.png")],
+            initialfile=f"layer_{which + 1}.png"
+        )
+        if path:
+            Image.fromarray(layer_img, "RGBA").save(path)
+    def save_all_layers(self):
+        if not self.layers:
+            return
+        for i in range(len(self.layers)):
+            self.save_layer(i)
     # ================= Tools =================
     def set_tool(self, t):
         self.tool = t
@@ -349,7 +462,12 @@ class ImageEditor:
 
         ix, iy = self.canvas_to_image(e.x, e.y)
 
-        if self.tool == "pipette":
+        if self.tool == "move":
+            # ドラッグ開始時のマウス位置と現在のオフセットを記録
+            layer = self.layers[self.active_layer]
+            self.drag_start_pos = (ix, iy)
+            self.drag_start_offset = (layer.get("off_x", 0), layer.get("off_y", 0))
+        elif self.tool == "pipette":
             layer = self.layers[self.active_layer]["img"]
             if 0 <= ix < self.width and 0 <= iy < self.height:
                 self.draw_color = layer[iy, ix].copy()
@@ -362,10 +480,18 @@ class ImageEditor:
             self.paint(ix, iy, False)
 
     def on_drag(self, e):
-        if self.tool != "pen" and self.tool != "eraser":
+        if self.tool == "pipette":
             return
         ix, iy = self.canvas_to_image(e.x, e.y)
-        self.paint(ix, iy, self.tool == "eraser")
+        if self.tool == "move":
+            dx = ix - self.drag_start_pos[0]
+            dy = iy - self.drag_start_pos[1]
+            layer = self.layers[self.active_layer]
+            layer["off_x"] = self.drag_start_offset[0] + dx
+            layer["off_y"] = self.drag_start_offset[1] + dy
+            self.redraw()
+        else:
+            self.paint(ix, iy, self.tool == "eraser")
 
     def end_stroke(self, _):
         if self.current_stroke:
@@ -377,18 +503,27 @@ class ImageEditor:
         if not (0 <= x < self.width and 0 <= y < self.height):
             return
 
-        layer = self.layers[self.active_layer]["img"]
-        before = layer[y, x].copy()
+        layer_dict = self.layers[self.active_layer]
+        layer_img = layer_dict["img"]
+        
+        # キャンバス座標をレイヤー内の相対座標に変換
+        ox = layer_dict.get("off_x", 0)
+        oy = layer_dict.get("off_y", 0)
+        lx, ly = x - ox, y - oy
 
-        if eraser:
-            color = np.array([0,0,0,0], dtype=np.uint8)
-        else:
-            color = self.draw_color
+        # レイヤーの画像範囲外なら描画しない（あるいは自動拡張させることも可能）
+        lh, lw = layer_img.shape[:2]
+        if not (0 <= lx < lw and 0 <= ly < lh):
+            return
+
+        before = layer_img[ly, lx].copy()
+        color = np.array([0,0,0,0], dtype=np.uint8) if eraser else self.draw_color
 
         if np.array_equal(before, color):
             return
 
-        layer[y, x] = color
+        layer_img[ly, lx] = color
+        # Undo用データ（座標はキャンバス基準で保存しておくと戻しやすい）
         self.current_stroke.append((self.active_layer, x, y, before))
         self.redraw()
 
@@ -500,6 +635,46 @@ class ImageEditor:
             self.layers[l]["img"][y, x] = before
         self.undo_stack.append(undo)
         self.redraw()
+    def start_offset_loop(self, dx, dy):
+        """長押しの開始"""
+        self.offset_layer(dx, dy)
+        # 100ミリ秒（0.1秒）ごとに実行。最初の反応を少し遅らせる場合は調整
+        self.after_id = self.root.after(100, lambda: self.start_offset_loop(dx, dy))
+
+    def stop_offset_loop(self, _=None):
+        """長押しの停止"""
+        if self.after_id:
+            self.root.after_cancel(self.after_id)
+            self.after_id = None
+    def apply_offset_entry(self):
+        """入力ボックスの数値をレイヤーのオフセットに反映する"""
+        if not self.layers:
+            return
+        try:
+            new_x = int(self.off_x_entry.get())
+            new_y = int(self.off_y_entry.get())
+            
+            layer = self.layers[self.active_layer]
+            layer["off_x"] = new_x
+            layer["off_y"] = new_y
+            self.redraw()
+        except ValueError:
+            # 数字以外が入った場合は無視、または警告
+            pass
+
+    def update_offset_ui(self):
+        """現在のレイヤーのオフセット値を入力ボックスに表示する"""
+        if not self.layers:
+            return
+        layer = self.layers[self.active_layer]
+        ox = layer.get("off_x", 0)
+        oy = layer.get("off_y", 0)
+
+        # 一旦全削除してから挿入
+        self.off_x_entry.delete(0, tk.END)
+        self.off_x_entry.insert(0, str(ox))
+        self.off_y_entry.delete(0, tk.END)
+        self.off_y_entry.insert(0, str(oy))
 
     # ================= View =================
     def set_zoom_index(self, v):
@@ -639,6 +814,16 @@ class ImageEditor:
         self.info.config(
             text=f"Tool:{self.tool}  Layer:{self.active_layer+1}/{len(self.layers)}  "
                  f"RGBA({r},{g},{b},{a})  Zoom:{int(self.zoom*100)}%{pos}"
+        )
+        ox, oy = 0, 0
+        if self.layers:
+            layer = self.layers[self.active_layer]
+            ox, oy = layer.get("off_x", 0), layer.get("off_y", 0)
+
+        self.info.config(
+            text=f"Tool:{self.tool}  Layer:{self.active_layer+1}/{len(self.layers)}  "
+                 f"RGBA({r},{g},{b},{a})  Zoom:{int(self.zoom*100)}%  "
+                 f"Offset:({ox},{oy}){pos}"
         )
 
 
