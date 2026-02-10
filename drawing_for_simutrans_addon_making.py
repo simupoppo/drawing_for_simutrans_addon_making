@@ -42,6 +42,7 @@ class ImageEditor:
         main = tk.Frame(self.root)
         main.pack(fill=tk.BOTH, expand=True)
 
+
         # ---- top bar ----
         bar = tk.Frame(main)
         bar.pack(fill=tk.X)
@@ -110,13 +111,23 @@ class ImageEditor:
         body = tk.Frame(main)
         body.pack(fill=tk.BOTH, expand=True)
 
+        # ---- scroll bar ----
+        self.hbar = tk.Scrollbar(body, orient=tk.HORIZONTAL)
+        self.hbar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.vbar = tk.Scrollbar(body, orient=tk.VERTICAL)
+        self.vbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         # ---- layer panel ----
         self.layer_frame = tk.Frame(body, width=120, relief="sunken", bd=1)
         self.layer_frame.pack(side=tk.LEFT, fill=tk.Y)
 
         # ---- canvas ----
-        self.canvas = tk.Canvas(body, bg="#808080", highlightthickness=0)
+        self.canvas = tk.Canvas(body, bg="#808080", highlightthickness=0,
+                                xscrollcommand=self.hbar.set,
+                                yscrollcommand=self.vbar.set)
         self.canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.hbar.config(command=self.canvas.xview)
+        self.vbar.config(command=self.canvas.yview)
 
         # ---- footer ----
         self.info = tk.Label(main, anchor="w")
@@ -131,6 +142,8 @@ class ImageEditor:
         self.canvas.bind("<MouseWheel>", self.zoom_wheel)
         self.canvas.bind("<Motion>", self.update_cursor_info)
         self.canvas.bind("<Configure>", lambda e: self.redraw())
+        self.canvas.bind("<Button-3>", self.start_pan)
+        self.canvas.bind("<B3-Motion>", self.pan)
 
     # ================= Image I/O =================
     def open_image(self):
@@ -302,7 +315,9 @@ class ImageEditor:
     
     # ================= Drawing =================
     def canvas_to_image(self, x, y):
-        return int((-self.view_x + x) / self.zoom), int((-self.view_y + y) / self.zoom)
+        cx = self.canvas.canvasx(x)
+        cy = self.canvas.canvasy(y)
+        return int((cx) / self.zoom), int((cy) / self.zoom)
 
     def on_click(self, e):
         if not self.layers:
@@ -478,37 +493,35 @@ class ImageEditor:
         self.zoom_scale.set(i)
 
     def start_pan(self, e):
-        self.pan_start = (e.x, e.y)
+        self.canvas.scan_mark(e.x, e.y)
 
     def pan(self, e):
-        dx = -(self.pan_start[0] - e.x) 
-        dy = -(self.pan_start[1] - e.y) 
-        print("move"+str(dx)+","+str(dy)+",zoom"+str(self.zoom))
-        self.view_x += int(dx)
-        self.view_y += int(dy)
-        self.pan_start = (e.x, e.y)
-        self.redraw()
+        self.canvas.scan_dragto(e.x, e.y, gain=1)
+        self.update_footer()
 
     # ================= Rendering =================
     def redraw(self):
         if not self.layers:
             return
 
-        self.canvas.delete("all")
-
         img = self.compose_layers()
         h, w = img.shape[:2]
 
+        # 1. ズーム後のサイズを計算 (scrollregionの設定より先に! )
         zw = int(w * self.zoom)
         zh = int(h * self.zoom)
-        x = self.view_x
-        y = self.view_y
+        
+        # 2. Canvasのスクロール可能範囲を更新
+        self.canvas.config(scrollregion=(0, 0, zw, zh))
 
+        # 3. 画像のリサイズと描画
         pil = Image.fromarray(img, "RGBA").resize((zw, zh), Image.NEAREST)
         self.tkimg = ImageTk.PhotoImage(pil)
 
+        self.canvas.delete("all")
+        # スクロールバー制御時は 0,0 に描画するのが正解です
         self.canvas.create_image(
-            x,y,
+            0, 0,
             image=self.tkimg,
             anchor="nw"
         )
