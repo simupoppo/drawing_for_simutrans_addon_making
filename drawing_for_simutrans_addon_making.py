@@ -38,8 +38,9 @@ class ImageEditor:
 
         # ---- tool ----
         self.tool = "pen"
-        self.floating_image = None  # ペースト中の画像(numpy)
-        self.floating_pos = [0, 0]  # ペースト中の左上座標 [x, y]
+        self.floating_image = None  # 貼り付け中の画像 (ndarray)
+        self.floating_x = 0         # 貼り付け中のX座標 (キャンバス基準)
+        self.floating_y = 0         # 貼り付け中のY座標 (キャンバス基準)
         self.is_dragging_floating = False
         self.draw_color = np.array([0, 0, 0, 255], dtype=np.uint8)
 
@@ -118,6 +119,9 @@ class ImageEditor:
         # Editタブに追加
         tk.Button(tab_edit, text="Copy", command=self.copy_selection).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Paste", command=self.paste_image).pack(side=tk.LEFT)
+        self.btn_confirm = tk.Button(tab_edit, text="Confirm Paste", bg="#ffcc00", 
+                                     command=self.finalize_paste)
+        self.btn_confirm.pack(side=tk.LEFT, padx=5)
 
         tk.Button(tab_layer, text="New Layer", command=self.add_layer).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Duplicate Layer", command=self.duplicate_layer).pack(side=tk.LEFT)
@@ -278,6 +282,7 @@ class ImageEditor:
         self.root.bind("<Control-z>", lambda e: self.undo())
         self.root.bind("<Control-y>", lambda e: self.redo())
         self.root.bind("<Escape>", self.clear_selection)
+        self.root.bind("<Return>", lambda e: self.finalize_paste())
 
     def clear_selection(self, event=None):
         self.selection_rect = None
@@ -652,6 +657,11 @@ class ImageEditor:
         self.current_stroke = []
 
         ix, iy = self.canvas_to_image(e.x, e.y)
+        if self.tool == "move_paste" and self.floating_image is not None:
+            # ドラッグ開始位置の記録
+            self.drag_start_pos = (ix, iy)
+            self.floating_start_pos = (self.floating_x, self.floating_y)
+            return
         if self.tool == "select":
             self.selection_rect = [ix, iy, ix, iy]
             return
@@ -676,6 +686,13 @@ class ImageEditor:
         if self.tool == "pipette":
             return
         ix, iy = self.canvas_to_image(e.x, e.y)
+        if self.tool == "move_paste" and self.floating_image is not None:
+            dx = ix - self.drag_start_pos[0]
+            dy = iy - self.drag_start_pos[1]
+            self.floating_x = self.floating_start_pos[0] + dx
+            self.floating_y = self.floating_start_pos[1] + dy
+            self.redraw()
+            return
         if self.tool == "select":
             if self.selection_rect:
                 self.selection_rect[2] = ix
@@ -862,68 +879,67 @@ class ImageEditor:
                     print(f"Clipboard error: {e}")
 
     def paste_image(self):
-        """OSのクリップボードまたは内部バッファからアクティブレイヤーへ貼り付け"""
+        """OSクリップボード等から画像を取得し、フローティング状態で開始"""
         from PIL import Image, ImageGrab
         
-        # 1. まずOSのクリップボード（他アプリからの画像）を試す
         try:
             pasted_img = ImageGrab.grabclipboard()
-        except Exception:
+        except:
             pasted_img = None
 
         if isinstance(pasted_img, Image.Image):
             clip_np = np.array(pasted_img.convert("RGBA"), dtype=np.uint8)
         elif self.clipboard is not None:
-            # OS側になければ自作エディタ内の内部バッファを使用
-            clip_np = self.clipboard
+            clip_np = self.clipboard.copy()
         else:
             return
 
-        # 2. 貼り付け先レイヤーの情報
+        self.floating_image = clip_np
+        
+        # 貼り付け初期位置（選択範囲があればそこ、なければ左上）
+        if self.selection_rect:
+            self.floating_x = min(self.selection_rect[0], self.selection_rect[2])
+            self.floating_y = min(self.selection_rect[1], self.selection_rect[3])
+        else:
+            self.floating_x, self.floating_y = 0, 0
+        
+        self.set_tool("move_paste") # 専用ツールに切り替え
+        self.redraw()
+    def finalize_paste(self):
+        """フローティング画像を現在のアクティブレイヤーに書き込む"""
+        if self.floating_image is None:
+            return
+
         layer_dict = self.layers[self.active_layer]
         target_img = layer_dict["img"]
         th, tw = target_img.shape[:2]
-        ch, cw = clip_np.shape[:2]
-
-        # 3. 貼り付け位置の決定（選択範囲の左上、なければ 0,0）
-        px, py = 0, 0
-        if self.selection_rect:
-            px = min(self.selection_rect[0], self.selection_rect[2])
-            py = min(self.selection_rect[1], self.selection_rect[3])
+        ch, cw = self.floating_image.shape[:2]
         
+        # レイヤーのオフセットを考慮した貼り付け相対位置
         ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
-        lx, ly = px - ox, py - oy
+        lx, ly = self.floating_x - ox, self.floating_y - oy
 
-        # 4. 書き込み範囲の計算
+        # 書き込み範囲計算
         x1, y1 = max(0, lx), max(0, ly)
         x2, y2 = min(tw, lx + cw), min(th, ly + ch)
-        
+
         if x2 > x1 and y2 > y1:
-            # --- Undoの保存 ---
-            # 既存の1ピクセルずつのUndoスタックと整合性をとるため
-            # 貼り付け範囲の「変更前ピクセル」をすべてスタックに積む
+            # Undo用に変更範囲を保存 (既存のピクセル単位形式に合わせる)
             patch_undo = []
             sx1, sy1 = x1 - lx, y1 - ly
-            
             for dy in range(y2 - y1):
                 for dx in range(x2 - x1):
-                    # (layer_idx, abs_x, abs_y, before_color)
-                    patch_undo.append((
-                        self.active_layer, 
-                        x1 + dx + ox, 
-                        y1 + dy + oy, 
-                        target_img[y1 + dy, x1 + dx].copy()
-                    ))
-            
+                    patch_undo.append((self.active_layer, x1 + dx + ox, y1 + dy + oy, 
+                                       target_img[y1 + dy, x1 + dx].copy()))
             self.undo_stack.append(patch_undo)
-            self.redo_stack.clear()
-
-            # --- 貼り付け実行 ---
-            sx2, sy2 = sx1 + (x2 - x1), sy1 + (y2 - y1)
-            target_img[y1:y2, x1:x2] = clip_np[sy1:sy2, sx1:sx2]
             
-            self.redraw()
-            print("Pasted to active layer.")
+            # 書き込み (アルファブレンドする場合はここで計算)
+            sx2, sy2 = sx1 + (x2 - x1), sy1 + (y2 - y1)
+            target_img[y1:y2, x1:x2] = self.floating_image[sy1:sy2, sx1:sx2]
+
+        self.floating_image = None # フローティング解除
+        self.set_tool("pen")       # ペンに戻す
+        self.redraw()
 
     # ================= Undo / Redo =================
     def undo(self):
@@ -1185,6 +1201,17 @@ class ImageEditor:
         self.canvas.delete("fixed_guide") # 古いガイドだけを消去
         if self.show_grid:
             self.draw_simutrans_guides()
+
+        if self.floating_image is not None:
+            f_img = Image.fromarray(self.floating_image, "RGBA")
+            # ズーム倍率に合わせてリサイズ
+            zw, zh = int(f_img.width * self.zoom), int(f_img.height * self.zoom)
+            if zw > 0 and zh > 0:
+                f_img = f_img.resize((zw, zh), Image.NEAREST)
+                self.floating_tk = ImageTk.PhotoImage(f_img)
+                self.canvas.create_image(self.floating_x * self.zoom, 
+                                         self.floating_y * self.zoom, 
+                                         anchor="nw", image=self.floating_tk, tags="floating")
 
         # 全体サイズを維持
         zw, zh = int(self.width * self.zoom), int(self.height * self.zoom)
