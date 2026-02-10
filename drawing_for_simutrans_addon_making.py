@@ -35,6 +35,7 @@ class ImageEditor:
         self.view_y = 0
         self.pan_start = None
         self.inactive_dim_factor = 0.4
+        self.line_start = None  # 直線の始点 (ix, iy)
 
         # ---- tool ----
         self.tool = "pen"
@@ -56,6 +57,7 @@ class ImageEditor:
         self.show_grid = True
         self.base_offset_y = 0  # 菱形の上下オフセット
         self.show_base_tile = True
+        self.ALLOWED_SLOPES = [0, 3/8, 1/2, 5/8, 1, 3/2, float('inf')]
 
         self.create_ui()
 
@@ -102,6 +104,9 @@ class ImageEditor:
         btn_fill = tk.Button(bar, text="Fill", command=lambda: self.set_tool("fill"))
         btn_fill.pack(side=tk.LEFT)
         self.tool_btns["fill"] = btn_fill
+        btn_line = tk.Button(bar, text="Line", command=lambda: self.set_tool("line"))
+        btn_line.pack(side=tk.LEFT)
+        self.tool_btns["line"] = btn_line
 
         btn_eraser = tk.Button(bar, text="Eraser", command=lambda: self.set_tool("eraser"))
         btn_eraser.pack(side=tk.LEFT)
@@ -682,6 +687,10 @@ class ImageEditor:
         if self.tool == "select":
             self.selection_rect = [ix, iy, ix, iy]
             return
+        if self.tool == "line":
+            self.line_start = (ix, iy)
+            self.drag_start_pos = (ix, iy)
+            return
         if self.tool == "move":
             # ドラッグ開始時のマウス位置と現在のオフセットを記録
             layer = self.layers[self.active_layer]
@@ -712,6 +721,15 @@ class ImageEditor:
             self.floating_y = self.floating_start_pos[1] + dy
             self.redraw()
             return
+        if self.tool == "line":
+            x1, y1 = self.line_start
+            # Shiftキーが押されている場合のみスナップを適用
+            if e.state & 0x0001:
+                ix, iy = self.snap_coordinate(x1, y1, ix, iy)
+            
+            self.redraw()
+            self.draw_preview_line(ix, iy) # 補正後の座標で描画
+            return
         if self.tool == "select":
             if self.selection_rect:
                 self.selection_rect[2] = ix
@@ -728,7 +746,17 @@ class ImageEditor:
         else:
             self.paint(ix, iy, self.tool == "eraser")
 
-    def end_stroke(self, _):
+    def end_stroke(self, e):
+        ix, iy = self.canvas_to_image(e.x, e.y)
+        
+        if self.tool == "line":
+            x1, y1 = self.line_start
+            # 確定時もShiftキー判定を行う
+            if e.state & 0x0001:
+                ix, iy = self.snap_coordinate(x1, y1, ix, iy)
+            
+            self.finalize_line(x1, y1, ix, iy) # 確定
+            return
         if self.tool == "select" and self.selection_rect:
             x1, y1, x2, y2 = self.selection_rect
             if x1 == x2 or y1 == y2:
@@ -817,7 +845,84 @@ class ImageEditor:
         if undo_data:
             self.undo_stack.append(undo_data)
             self.redraw()
+    def snap_coordinate(self, x1, y1, x2, y2):
+        """(x1, y1)を起点として、(x2, y2)を最も近い許可された傾きに補正する"""
+        import math
+        dx = x2 - x1
+        dy = y2 - y1
+        
+        if dx == 0 and dy == 0:
+            return x2, y2
 
+        # 現在のマウス位置の実際の角度（0〜90度として計算）
+        current_angle = math.atan2(abs(dy), abs(dx))
+        
+        # 許可された傾きをラジアンに変換
+        # 0, 3/8, 1/2, 5/8, 1.0, 1.5, inf
+        slopes = [0, 0.375, 0.5, 0.625, 1.0, 1.5, float('inf')]
+        target_angles = [math.atan(s) if s != float('inf') else math.pi/2 for s in slopes]
+        
+        # 最も近い角度を選択
+        best_angle = min(target_angles, key=lambda a: abs(a - current_angle))
+        
+        # 距離を維持して新しい座標を計算
+        dist = math.sqrt(dx**2 + dy**2)
+        sign_x = 1 if dx >= 0 else -1
+        sign_y = 1 if dy >= 0 else -1
+        
+        new_dx = dist * math.cos(best_angle) * sign_x
+        new_dy = dist * math.sin(best_angle) * sign_y
+        
+        return int(round(x1 + new_dx)), int(round(y1 + new_dy))
+    def draw_preview_line(self, cur_ix, cur_iy):
+        """
+        ドラッグ中の直線をキャンバスに表示する
+        cur_ix, cur_iy: スナップ処理等を通した後の画像上のピクセル座標
+        """
+        # 1. 始点の画像座標をキャンバス座標に変換
+        x1 = self.line_start[0] * self.zoom
+        y1 = self.line_start[1] * self.zoom
+        
+        # 2. 終点（現在のマウス位置）の画像座標をキャンバス座標に変換
+        x2 = cur_ix * self.zoom
+        y2 = cur_iy * self.zoom
+        
+        # 3. キャンバスに線を描画（tags="preview" を付けて管理）
+        # 幅はズームに関わらず 1px (またはお好みでズーム比例)
+        self.canvas.create_line(
+            x1, y1, x2, y2, 
+            fill="red", 
+            width=1, 
+            dash=(4, 4), # 点線にすると下絵が見やすくなります
+            tags="preview"
+        )
+    def finalize_line(self, x1, y1, x2, y2):
+        """
+        補正後の座標 (x1,y1)から(x2,y2)へ、
+        アクティブレイヤーに幅1の直線を書き込む。
+        """
+        from PIL import Image, ImageDraw
+
+        layer_dict = self.layers[self.active_layer]
+        img = layer_dict["img"] # 現在のレイヤー(numpy配列)
+        
+        # 1. Undo保存（今回はシンプルにレイヤー全体を保存）
+        # ※もし個別のピクセルリスト形式でUndoを管理している場合は、ここを調整してください
+        self.save_full_undo(self.active_layer)
+
+        # 2. NumPy配列をPIL画像に変換して描画の準備
+        pil_img = Image.fromarray(img)
+        draw = ImageDraw.Draw(pil_img)
+
+        # 3. 直線を描画
+        # fill は (R, G, B, A) のタプル形式にする
+        draw.line([(x1, y1), (x2, y2)], fill=tuple(self.draw_color), width=1)
+
+        # 4. NumPy配列に戻してレイヤーを更新
+        layer_dict["img"] = np.array(pil_img, dtype=np.uint8)
+
+        # 5. 画面を再描画して反映
+        self.redraw()
     # ================= Using Changing Tools =================
     def normalize_active_layer(self):
         if not self.layers:
@@ -1011,6 +1116,15 @@ class ImageEditor:
         self.redraw()
 
     # ================= Undo / Redo =================
+    def save_full_undo(self, layer_idx):
+        """レイヤー全体のバックアップをUndoスタックに保存"""
+        img_copy = self.layers[layer_idx]["img"].copy()
+        # undoメソッド側で dict 型かどうかを見て復元処理を分岐させる想定です
+        self.undo_stack.append({
+            "type": "full", 
+            "layer_idx": layer_idx, 
+            "img": img_copy
+        })
     def undo(self):
         if not self.undo_stack: return
         stroke = self.undo_stack.pop()
@@ -1206,6 +1320,8 @@ class ImageEditor:
     def redraw(self):
         if not self.layers or self.width == 0:
             return
+        self.canvas.delete("preview")
+        self.canvas.delete("selection")
 
         # 1. 表示範囲の取得
         x_start, x_end = self.canvas.xview()
