@@ -832,10 +832,12 @@ class ImageEditor:
         y1 = self.line_start[1] * self.zoom
         x2 = cur_ix * self.zoom
         y2 = cur_iy * self.zoom
+        r, g, b = self.draw_color[:3]
+        hex_color = f"#{r:02x}{g:02x}{b:02x}"
         
         self.canvas.create_line(
             x1, y1, x2, y2, 
-            fill=self.draw_color, 
+            fill=hex_color, 
             width=1, 
             dash=(4, 4),
             tags="preview"
