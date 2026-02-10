@@ -99,6 +99,10 @@ class ImageEditor:
         btn_pen.pack(side=tk.LEFT)
         self.tool_btns["pen"] = btn_pen
 
+        btn_fill = tk.Button(bar, text="Fill", command=lambda: self.set_tool("fill"))
+        btn_fill.pack(side=tk.LEFT)
+        self.tool_btns["fill"] = btn_fill
+
         btn_eraser = tk.Button(bar, text="Eraser", command=lambda: self.set_tool("eraser"))
         btn_eraser.pack(side=tk.LEFT)
         self.tool_btns["eraser"] = btn_eraser
@@ -527,17 +531,23 @@ class ImageEditor:
             self.save_layer(i)
     # ================= Tools =================
     def set_tool(self, tool_name):
+        if self.tool == "move_paste" and tool_name != "move_paste":
+            self.finalize_paste()
+
         self.tool = tool_name
         
         # すべてのボタンの外見をデフォルトに戻す
         for name, btn in self.tool_btns.items():
-            btn.config(relief=tk.RAISED, bg="SystemButtonFace") # 標準の背景色
-
-        # 選択されたツールだけ強調
+            btn.config(relief=tk.RAISED, bg="SystemButtonFace")
         if tool_name in self.tool_btns:
-            # relief=tk.SUNKEN で押し込まれた見た目にする
-            # bg="lightblue" などで色を変えるとより分かりやすい
             self.tool_btns[tool_name].config(relief=tk.SUNKEN, bg="#ADD8E6")
+        
+        # 貼り付け確定ボタンの表示制御
+        if self.tool == "move_paste":
+            self.btn_confirm.pack(side=tk.LEFT, padx=5)
+        else:
+            self.btn_confirm.pack_forget()
+
         if tool_name!="select":
             self.clear_selection()
         
@@ -679,6 +689,8 @@ class ImageEditor:
             self.tool = "pen"
         elif self.tool == "eraser":
             self.paint(ix, iy, True)
+        elif self.tool == "fill":
+            self.flood_fill(ix, iy)
         else:
             self.paint(ix, iy, False)
 
@@ -747,7 +759,57 @@ class ImageEditor:
         # Undo用データ（座標はキャンバス基準で保存しておくと戻しやすい）
         self.current_stroke.append((self.active_layer, x, y, before))
         self.redraw()
+    def flood_fill(self, x, y):
+        """NumPy配列を直接参照し、隣接する同色領域を特定して塗りつぶす"""
+        layer_dict = self.layers[self.active_layer]
+        img = layer_dict["img"]
+        h, w = img.shape[:2]
 
+        # クリックした地点の色 (RGBA)
+        target_color = img[y, x].copy()
+        fill_color = np.array(self.draw_color, dtype=np.uint8)
+
+        # すでに同じ色なら処理しない
+        if np.array_equal(target_color, fill_color):
+            return
+
+        # --- シードフィル・アルゴリズム ---
+        # 探索用のスタック（NumPyを使ってもここはPythonのリストが高速）
+        stack = [(x, y)]
+        
+        # Undo用に書き換え前の情報を保持するリスト
+        undo_data = []
+
+        # 探索済みのピクセルを管理する内部用フラグ（ビットマップ）
+        # これを使わないと、target_colorとfill_colorが似ている場合に無限ループのリスクがある
+        visited = np.zeros((h, w), dtype=bool)
+
+        while stack:
+            cx, cy = stack.pop()
+
+            if not (0 <= cx < w and 0 <= cy < h):
+                continue
+            if visited[cy, cx]:
+                continue
+            
+            # NumPyの比較: RGBAの4要素すべてが一致するか
+            if np.array_equal(img[cy, cx], target_color):
+                # 1. Undo保存
+                undo_data.append((self.active_layer, cx, cy, img[cy, cx].copy()))
+                
+                # 2. 書き換え
+                img[cy, cx] = fill_color
+                visited[cy, cx] = True
+                
+                # 3. 隣接ピクセルをスタックへ
+                stack.append((cx + 1, cy))
+                stack.append((cx - 1, cy))
+                stack.append((cx, cy + 1))
+                stack.append((cx, cy - 1))
+
+        if undo_data:
+            self.undo_stack.append(undo_data)
+            self.redraw()
 
     # ================= Using Changing Tools =================
     def normalize_active_layer(self):
