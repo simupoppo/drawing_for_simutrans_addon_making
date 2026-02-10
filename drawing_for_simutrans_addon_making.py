@@ -17,8 +17,8 @@ class ImageEditor:
         self.active_layer = 0
         self.width = 0
         self.height = 0
-        self.bg_pattern = self.create_base_tile() # 背景タイルを生成
-        self.canvas_bg_ids = [] # 背景タイルオブジェクトのIDリスト
+        self.bg_pattern = self.create_base_tile()
+        self.canvas_bg_ids = []
 
         # ---- undo / redo ----
         self.undo_stack = []
@@ -29,35 +29,35 @@ class ImageEditor:
         # ---- view ----
         self.zoom_levels = [25, 50, 100, 200, 400, 600, 800, 1000]
         self.zoom = 1.0
-        self.cursor_x = None  # 初期化を追加
-        self.cursor_y = None  # 初期化を追加
+        self.cursor_x = None
+        self.cursor_y = None
         self.view_x = 0
         self.view_y = 0
         self.pan_start = None
         self.inactive_dim_factor = 0.4
-        self.line_start = None  # 直線の始点 (ix, iy)
+        self.line_start = None
 
         # ---- tool ----
         self.tool = "pen"
-        self.floating_image = None  # 貼り付け中の画像 (ndarray)
-        self.floating_x = 0         # 貼り付け中のX座標 (キャンバス基準)
-        self.floating_y = 0         # 貼り付け中のY座標 (キャンバス基準)
+        self.floating_image = None
+        self.floating_x = 0
+        self.floating_y = 0
         self.is_dragging_floating = False
         self.draw_color = np.array([0, 0, 0, 255], dtype=np.uint8)
 
         self.layer_panels = []
         # ---- selection ----
-        self.selection_rect = None  # [x1, y1, x2, y2] (キャンバス上のピクセル座標)
-        self.clipboard = None       # コピーされた画像データ (ndarray)
-        self.selection_id = None    # キャンバス上の枠オブジェクトID
+        self.selection_rect = None  # [x1, y1, x2, y2]
+        self.clipboard = None       # copied data
+        self.selection_id = None    # 
         
         # ---- Simutrans Settings ----
         self.build_paksize = 128
         self.play_paksize = 128
         self.show_grid = True
-        self.base_offset_y = 0  # 菱形の上下オフセット
+        self.base_offset_y = 0  # offset of the basement tile
         self.show_base_tile = True
-        self.ALLOWED_SLOPES = [0, 3/8, 1/2, 5/8, 1, 3/2, float('inf')]
+        self.ALLOWED_SLOPES = [0, 3/8, 1/2, 5/8, 1, 3/2, float('inf')] # slope angle
 
         self.create_ui()
 
@@ -94,7 +94,7 @@ class ImageEditor:
         tk.Button(tab_edit, text="Undo", command=self.undo).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Redo", command=self.redo).pack(side=tk.LEFT)
 
-        # create_ui メソッド内、各ボタン作成部分を以下のように書き換え
+        # create_ui
         self.tool_btns = {}
 
         btn_pen = tk.Button(bar, text="Pen", command=lambda: self.set_tool("pen"))
@@ -120,24 +120,23 @@ class ImageEditor:
         btn_move.pack(side=tk.LEFT)
         self.tool_btns["move"] = btn_move
 
-        # ツールバーに追加
+        # toolbar
         btn_select = tk.Button(bar, text="Select", command=lambda: self.set_tool("select"))
         btn_select.pack(side=tk.LEFT)
         self.tool_btns["select"] = btn_select
 
-        # Editタブに追加
+        # Edit
         tk.Button(tab_edit, text="Copy", command=self.copy_selection).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Paste", command=self.paste_image).pack(side=tk.LEFT)
         self.btn_confirm = tk.Button(tab_edit, text="Confirm Paste", bg="#ffcc00", 
                                      command=self.finalize_paste)
         self.btn_confirm.pack(side=tk.LEFT, padx=5)
-
+        #layer
         tk.Button(tab_layer, text="New Layer", command=self.add_layer).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Duplicate Layer", command=self.duplicate_layer).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Delete Layer", command=self.delete_layer).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="▲ Up", command=self.move_layer_up).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="▼ Down", command=self.move_layer_down).pack(side=tk.LEFT)
-        # レイヤー操作タブなどに追加
         tk.Button(tab_layer, text="Export Layer", command=lambda:self.save_layer(-1)).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Export All Layer", command=self.save_all_layers).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Import to Layer", command=self.import_to_layer).pack(side=tk.LEFT)
@@ -155,7 +154,8 @@ class ImageEditor:
 
         tk.Button(off_ui_frame, text="Apply", command=self.apply_offset_entry).grid(row=0, column=4, padx=5)
         
-        # オフセット操作用（長押し対応版）
+        # offset for layer
+
         off_frame = tk.Frame(tab_layer)
         off_frame.pack(side=tk.LEFT, padx=10)
 
@@ -169,9 +169,7 @@ class ImageEditor:
         for text, dx, dy, r, c in directions:
             btn = tk.Button(off_frame, text=text)
             btn.grid(row=r, column=c)
-            # マウス左ボタン押し下げでループ開始
             btn.bind("<ButtonPress-1>", lambda e, x=dx, y=dy: self.start_offset_loop(x, y))
-            # マウスを離す、またはボタン外に出た時にループ停止
             btn.bind("<ButtonRelease-1>", self.stop_offset_loop)
             btn.bind("<Leave>", self.stop_offset_loop)
         # --- Simutrans Config GUI ---
@@ -297,8 +295,7 @@ class ImageEditor:
         self.selection_rect = None
         self.redraw()
     def create_base_tile(self):
-        """16x16pxの固定市松模様タイルを生成"""
-        size = 8 # 1マスのサイズ。16x16のタイル内に4マス入る
+        size = 8
         c1, c2 = (220, 220, 220, 255), (190, 190, 190, 255)
         data = np.zeros((size * 2, size * 2, 4), dtype=np.uint8)
         data[:size, :size] = c1
@@ -343,7 +340,6 @@ class ImageEditor:
         if not self.layers:
             return
 
-        # 本来の色で合成
         out = self.compose_layers(for_display=False)
         path = filedialog.asksaveasfilename(defaultextension=".png")
         if path:
@@ -410,23 +406,19 @@ class ImageEditor:
         if not self.layers:
             return np.zeros((self.height, self.width, 4), dtype=np.uint8)
 
-        # キャンバスサイズの出力バッファ
         out = np.zeros((self.height, self.width, 4), dtype=np.float32)
 
         for i, layer in enumerate(self.layers):
             if not layer["visible"]: continue
             
-            # 各レイヤーの現在の位置とサイズを取得
             src = layer["img"].astype(np.float32)
             lh, lw = src.shape[:2]
             ox, oy = layer.get("off_x", 0), layer.get("off_y", 0)
 
-            # キャンバスとレイヤーが重なる範囲を計算（非破壊の鍵）
             x1, y1 = max(0, ox), max(0, oy)
             x2, y2 = min(self.width, ox + lw), min(self.height, oy + lh)
 
             if x2 > x1 and y2 > y1:
-                # 転送元（レイヤー画像）のどの部分を使うか
                 sx1, sy1 = x1 - ox, y1 - oy
                 sx2, sy2 = sx1 + (x2 - x1), sy1 + (y2 - y1)
                 
@@ -495,23 +487,20 @@ class ImageEditor:
         if not path:
             return
 
-        # 1. 読み込み画像をそのままNumPy配列にする
         import_img = Image.open(path).convert("RGBA")
         import_np = np.array(import_img, dtype=np.uint8)
 
-        # 2. 新しいレイヤーとして追加（切り抜かず、オフセット0で配置）
         self.layers.append({
-            "img": import_np,   # 画像データそのもの
+            "img": import_np,
             "visible": True,
-            "off_x": 0,         # 表示開始位置X
-            "off_y": 0          # 表示開始位置Y
+            "off_x": 0,
+            "off_y": 0
         })
         
         self.active_layer = len(self.layers) - 1
         self.refresh_layer_panel()
         self.redraw()
     def offset_layer(self, dx, dy):
-        """オフセット値を更新してレイヤーを移動させる（非破壊）"""
         if not self.layers:
             return
             
@@ -529,7 +518,7 @@ class ImageEditor:
         
         layer_img = self.layers[which]["img"]
         path = filedialog.asksaveasfilename(
-            title="選択中のレイヤーを保存",
+            title="save No.{which} layer",
             defaultextension=".png",
             filetypes=[("PNG", "*.png")],
             initialfile=f"layer_{which + 1}.png"
@@ -607,21 +596,16 @@ class ImageEditor:
             if new_pak <= old_pak:
                 return
 
-            # 1. すべてのレイヤーの画像を変換
             for layer in self.layers:
-                # 外部のプログラムを呼び出す
                 layer["img"] = change_image_paksize.change_paksize_program(layer["img"], old_pak, new_pak, 3)
             
-            # 2. キャンバス自体のサイズ設定を更新
-            # ※全レイヤーが同じサイズになる前提の場合
             self.width = int(self.width*new_pak/old_pak)
             self.height = int(self.width*new_pak/old_pak)
             self.build_paksize = new_pak
             self.build_entry.delete(0, tk.END)
             self.build_entry.insert(0, str(new_pak))
             
-            # 3. UIの整合性をとる
-            self.update_sim_settings() # play_paksizeのバリデーション等
+            self.update_sim_settings()
             self.refresh_layer_panel()
             self.redraw()
             
@@ -638,13 +622,9 @@ class ImageEditor:
             if new_pak == old_pak:
                 return
 
-            # 1. すべてのレイヤーの画像を変換
             for layer in self.layers:
-                # 外部のプログラムを呼び出す
                 layer["img"] = png_merge_for_simutrans.resize_program(layer["img"], old_pak, new_pak, 0,2)
             
-            # 2. キャンバス自体のサイズ設定を更新
-            # ※全レイヤーが同じサイズになる前提の場合
             self.width = int(self.width*new_pak/old_pak)
             self.height = int(self.width*new_pak/old_pak)
             self.play_paksize = int(self.play_paksize*new_pak/old_pak)
@@ -657,8 +637,7 @@ class ImageEditor:
             self.base_off_entry.delete(0, tk.END)
             self.base_off_entry.insert(0, str(self.base_offset_y))
             
-            # 3. UIの整合性をとる
-            self.update_sim_settings() # play_paksizeのバリデーション等
+            self.update_sim_settings()
             self.refresh_layer_panel()
             self.redraw()
             
@@ -680,7 +659,6 @@ class ImageEditor:
 
         ix, iy = self.canvas_to_image(e.x, e.y)
         if self.tool == "move_paste" and self.floating_image is not None:
-            # ドラッグ開始位置の記録
             self.drag_start_pos = (ix, iy)
             self.floating_start_pos = (self.floating_x, self.floating_y)
             return
@@ -692,7 +670,6 @@ class ImageEditor:
             self.drag_start_pos = (ix, iy)
             return
         if self.tool == "move":
-            # ドラッグ開始時のマウス位置と現在のオフセットを記録
             layer = self.layers[self.active_layer]
             self.drag_start_pos = (ix, iy)
             self.drag_start_offset = (layer.get("off_x", 0), layer.get("off_y", 0))
@@ -723,12 +700,11 @@ class ImageEditor:
             return
         if self.tool == "line":
             x1, y1 = self.line_start
-            # Shiftキーが押されている場合のみスナップを適用
             if e.state & 0x0001:
                 ix, iy = self.snap_coordinate(x1, y1, ix, iy)
             
             self.redraw()
-            self.draw_preview_line(ix, iy) # 補正後の座標で描画
+            self.draw_preview_line(ix, iy)
             return
         if self.tool == "select":
             if self.selection_rect:
@@ -751,11 +727,10 @@ class ImageEditor:
         
         if self.tool == "line":
             x1, y1 = self.line_start
-            # 確定時もShiftキー判定を行う
             if e.state & 0x0001:
                 ix, iy = self.snap_coordinate(x1, y1, ix, iy)
             
-            self.finalize_line(x1, y1, ix, iy) # 確定
+            self.finalize_line(x1, y1, ix, iy)
             return
         if self.tool == "select" and self.selection_rect:
             x1, y1, x2, y2 = self.selection_rect
@@ -774,12 +749,10 @@ class ImageEditor:
         layer_dict = self.layers[self.active_layer]
         layer_img = layer_dict["img"]
         
-        # キャンバス座標をレイヤー内の相対座標に変換
         ox = layer_dict.get("off_x", 0)
         oy = layer_dict.get("off_y", 0)
         lx, ly = x - ox, y - oy
 
-        # レイヤーの画像範囲外なら描画しない（あるいは自動拡張させることも可能）
         lh, lw = layer_img.shape[:2]
         if not (0 <= lx < lw and 0 <= ly < lh):
             return
@@ -791,32 +764,23 @@ class ImageEditor:
             return
 
         layer_img[ly, lx] = color
-        # Undo用データ（座標はキャンバス基準で保存しておくと戻しやすい）
         self.current_stroke.append((self.active_layer, x, y, before))
         self.redraw()
     def flood_fill(self, x, y):
-        """NumPy配列を直接参照し、隣接する同色領域を特定して塗りつぶす"""
         layer_dict = self.layers[self.active_layer]
         img = layer_dict["img"]
         h, w = img.shape[:2]
 
-        # クリックした地点の色 (RGBA)
         target_color = img[y, x].copy()
         fill_color = np.array(self.draw_color, dtype=np.uint8)
 
-        # すでに同じ色なら処理しない
         if np.array_equal(target_color, fill_color):
             return
 
-        # --- シードフィル・アルゴリズム ---
-        # 探索用のスタック（NumPyを使ってもここはPythonのリストが高速）
         stack = [(x, y)]
-        
-        # Undo用に書き換え前の情報を保持するリスト
+
         undo_data = []
 
-        # 探索済みのピクセルを管理する内部用フラグ（ビットマップ）
-        # これを使わないと、target_colorとfill_colorが似ている場合に無限ループのリスクがある
         visited = np.zeros((h, w), dtype=bool)
 
         while stack:
@@ -827,16 +791,12 @@ class ImageEditor:
             if visited[cy, cx]:
                 continue
             
-            # NumPyの比較: RGBAの4要素すべてが一致するか
             if np.array_equal(img[cy, cx], target_color):
-                # 1. Undo保存
                 undo_data.append((self.active_layer, cx, cy, img[cy, cx].copy()))
                 
-                # 2. 書き換え
                 img[cy, cx] = fill_color
                 visited[cy, cx] = True
                 
-                # 3. 隣接ピクセルをスタックへ
                 stack.append((cx + 1, cy))
                 stack.append((cx - 1, cy))
                 stack.append((cx, cy + 1))
@@ -846,7 +806,6 @@ class ImageEditor:
             self.undo_stack.append(undo_data)
             self.redraw()
     def snap_coordinate(self, x1, y1, x2, y2):
-        """(x1, y1)を起点として、(x2, y2)を最も近い許可された傾きに補正する"""
         import math
         dx = x2 - x1
         dy = y2 - y1
@@ -854,18 +813,12 @@ class ImageEditor:
         if dx == 0 and dy == 0:
             return x2, y2
 
-        # 現在のマウス位置の実際の角度（0〜90度として計算）
         current_angle = math.atan2(abs(dy), abs(dx))
-        
-        # 許可された傾きをラジアンに変換
-        # 0, 3/8, 1/2, 5/8, 1.0, 1.5, inf
         slopes = [0, 0.375, 0.5, 0.625, 1.0, 1.5, float('inf')]
         target_angles = [math.atan(s) if s != float('inf') else math.pi/2 for s in slopes]
         
-        # 最も近い角度を選択
         best_angle = min(target_angles, key=lambda a: abs(a - current_angle))
         
-        # 距離を維持して新しい座標を計算
         dist = math.sqrt(dx**2 + dy**2)
         sign_x = 1 if dx >= 0 else -1
         sign_y = 1 if dy >= 0 else -1
@@ -875,53 +828,33 @@ class ImageEditor:
         
         return int(round(x1 + new_dx)), int(round(y1 + new_dy))
     def draw_preview_line(self, cur_ix, cur_iy):
-        """
-        ドラッグ中の直線をキャンバスに表示する
-        cur_ix, cur_iy: スナップ処理等を通した後の画像上のピクセル座標
-        """
-        # 1. 始点の画像座標をキャンバス座標に変換
         x1 = self.line_start[0] * self.zoom
         y1 = self.line_start[1] * self.zoom
-        
-        # 2. 終点（現在のマウス位置）の画像座標をキャンバス座標に変換
         x2 = cur_ix * self.zoom
         y2 = cur_iy * self.zoom
         
-        # 3. キャンバスに線を描画（tags="preview" を付けて管理）
-        # 幅はズームに関わらず 1px (またはお好みでズーム比例)
         self.canvas.create_line(
             x1, y1, x2, y2, 
-            fill="red", 
+            fill=self.draw_color, 
             width=1, 
-            dash=(4, 4), # 点線にすると下絵が見やすくなります
+            dash=(4, 4),
             tags="preview"
         )
     def finalize_line(self, x1, y1, x2, y2):
-        """
-        補正後の座標 (x1,y1)から(x2,y2)へ、
-        アクティブレイヤーに幅1の直線を書き込む。
-        """
         from PIL import Image, ImageDraw
 
         layer_dict = self.layers[self.active_layer]
-        img = layer_dict["img"] # 現在のレイヤー(numpy配列)
+        img = layer_dict["img"]
         
-        # 1. Undo保存（今回はシンプルにレイヤー全体を保存）
-        # ※もし個別のピクセルリスト形式でUndoを管理している場合は、ここを調整してください
         self.save_full_undo(self.active_layer)
 
-        # 2. NumPy配列をPIL画像に変換して描画の準備
         pil_img = Image.fromarray(img)
         draw = ImageDraw.Draw(pil_img)
 
-        # 3. 直線を描画
-        # fill は (R, G, B, A) のタプル形式にする
         draw.line([(x1, y1), (x2, y2)], fill=tuple(self.draw_color), width=1)
 
-        # 4. NumPy配列に戻してレイヤーを更新
         layer_dict["img"] = np.array(pil_img, dtype=np.uint8)
 
-        # 5. 画面を再描画して反映
         self.redraw()
     # ================= Using Changing Tools =================
     def normalize_active_layer(self):
@@ -990,7 +923,6 @@ class ImageEditor:
 
         self.redraw()
     def copy_selection(self):
-        """選択範囲をOSのクリップボードに画像としてコピー"""
         from PIL import Image
         import io
         try:
@@ -1012,25 +944,21 @@ class ImageEditor:
         img = layer_dict["img"]
         ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
 
-        # レイヤー相対座標
         lx1, ly1 = max(0, sx - ox), max(0, sy - oy)
         lx2, ly2 = min(img.shape[1], ex - ox), min(img.shape[0], ey - oy)
 
         if lx2 > lx1 and ly2 > ly1:
             clip_np = img[ly1:ly2, lx1:lx2].copy()
-            self.clipboard = clip_np  # 内部バッファに保持
+            self.clipboard = clip_np
             
-            # OSクリップボード (Windows) への書き出し
             if win32clipboard:
                 clip_img = Image.fromarray(clip_np, "RGBA")
                 
-                # 1. PNG形式のバイナリを作成（透過保持用）
                 png_output = io.BytesIO()
                 clip_img.save(png_output, format="PNG")
                 png_data = png_output.getvalue()
                 png_output.close()
 
-                # 2. DIB形式（透過なし互換用）
                 dib_output = io.BytesIO()
                 clip_img.convert("RGB").save(dib_output, "BMP")
                 dib_data = dib_output.getvalue()[14:]
@@ -1040,11 +968,9 @@ class ImageEditor:
                     win32clipboard.OpenClipboard()
                     win32clipboard.EmptyClipboard()
                     
-                    # PNG形式を登録してセット（最近のアプリ用）
                     fmt_png = win32clipboard.RegisterClipboardFormat("PNG")
                     win32clipboard.SetClipboardData(fmt_png, png_data)
                     
-                    # 標準的なDIBもセット（古いアプリ用）
                     win32clipboard.SetClipboardData(win32con.CF_DIB, dib_data)
                     
                     win32clipboard.CloseClipboard()
@@ -1053,7 +979,6 @@ class ImageEditor:
                     print(f"Clipboard error: {e}")
 
     def paste_image(self):
-        """OSクリップボード等から画像を取得し、フローティング状態で開始"""
         from PIL import Image, ImageGrab
         
         try:
@@ -1070,17 +995,15 @@ class ImageEditor:
 
         self.floating_image = clip_np
         
-        # 貼り付け初期位置（選択範囲があればそこ、なければ左上）
         if self.selection_rect:
             self.floating_x = min(self.selection_rect[0], self.selection_rect[2])
             self.floating_y = min(self.selection_rect[1], self.selection_rect[3])
         else:
             self.floating_x, self.floating_y = 0, 0
         
-        self.set_tool("move_paste") # 専用ツールに切り替え
+        self.set_tool("move_paste")
         self.redraw()
     def finalize_paste(self):
-        """フローティング画像を現在のアクティブレイヤーに書き込む"""
         if self.floating_image is None:
             return
 
@@ -1088,17 +1011,15 @@ class ImageEditor:
         target_img = layer_dict["img"]
         th, tw = target_img.shape[:2]
         ch, cw = self.floating_image.shape[:2]
-        
-        # レイヤーのオフセットを考慮した貼り付け相対位置
+
         ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
         lx, ly = self.floating_x - ox, self.floating_y - oy
 
-        # 書き込み範囲計算
+
         x1, y1 = max(0, lx), max(0, ly)
         x2, y2 = min(tw, lx + cw), min(th, ly + ch)
 
         if x2 > x1 and y2 > y1:
-            # Undo用に変更範囲を保存 (既存のピクセル単位形式に合わせる)
             patch_undo = []
             sx1, sy1 = x1 - lx, y1 - ly
             for dy in range(y2 - y1):
@@ -1106,20 +1027,17 @@ class ImageEditor:
                     patch_undo.append((self.active_layer, x1 + dx + ox, y1 + dy + oy, 
                                        target_img[y1 + dy, x1 + dx].copy()))
             self.undo_stack.append(patch_undo)
-            
-            # 書き込み (アルファブレンドする場合はここで計算)
+
             sx2, sy2 = sx1 + (x2 - x1), sy1 + (y2 - y1)
             target_img[y1:y2, x1:x2] = self.floating_image[sy1:sy2, sx1:sx2]
 
-        self.floating_image = None # フローティング解除
-        self.set_tool("pen")       # ペンに戻す
+        self.floating_image = None
+        self.set_tool("pen")
         self.redraw()
 
     # ================= Undo / Redo =================
     def save_full_undo(self, layer_idx):
-        """レイヤー全体のバックアップをUndoスタックに保存"""
         img_copy = self.layers[layer_idx]["img"].copy()
-        # undoメソッド側で dict 型かどうかを見て復元処理を分岐させる想定です
         self.undo_stack.append({
             "type": "full", 
             "layer_idx": layer_idx, 
@@ -1129,7 +1047,6 @@ class ImageEditor:
         if not self.undo_stack: return
         stroke = self.undo_stack.pop()
 
-        # もし stroke が辞書形式（レイヤー全体のバックアップ）なら
         if isinstance(stroke, dict) and "full_img" in stroke:
             l_idx = stroke["layer_idx"]
             current_back = self.layers[l_idx]["img"].copy()
@@ -1172,18 +1089,14 @@ class ImageEditor:
         self.undo_stack.append(undo)
         self.redraw()
     def start_offset_loop(self, dx, dy):
-        """長押しの開始"""
         self.offset_layer(dx, dy)
-        # 100ミリ秒（0.1秒）ごとに実行。最初の反応を少し遅らせる場合は調整
         self.after_id = self.root.after(100, lambda: self.start_offset_loop(dx, dy))
 
     def stop_offset_loop(self, _=None):
-        """長押しの停止"""
         if self.after_id:
             self.root.after_cancel(self.after_id)
             self.after_id = None
     def apply_offset_entry(self):
-        """入力ボックスの数値をレイヤーのオフセットに反映する"""
         if not self.layers:
             return
         try:
@@ -1199,14 +1112,12 @@ class ImageEditor:
             pass
 
     def update_offset_ui(self):
-        """現在のレイヤーのオフセット値を入力ボックスに表示する"""
         if not self.layers:
             return
         layer = self.layers[self.active_layer]
         ox = layer.get("off_x", 0)
         oy = layer.get("off_y", 0)
 
-        # 一旦全削除してから挿入
         self.off_x_entry.delete(0, tk.END)
         self.off_x_entry.insert(0, str(ox))
         self.off_y_entry.delete(0, tk.END)
@@ -1214,23 +1125,20 @@ class ImageEditor:
 
     # ================= View =================
     def set_zoom_index(self, v):
-        # 1. 現在の表示中心（比率 0.0 ~ 1.0）を記録
-        # xview() は (現在の表示開始比率, 現在の表示終了比率) を返す
         x_left, x_right = self.canvas.xview()
         y_top, y_bottom = self.canvas.yview()
         
         center_x = (x_left + x_right) / 2
         center_y = (y_top + y_bottom) / 2
 
-        # 2. ズーム倍率を更新
+        # change zoom
         self.zoom = self.zoom_levels[int(v)] / 100.0
         self.zoom_label.config(text=f"{self.zoom_levels[int(v)]}%")
         
-        # 3. 再描画（ここで scrollregion が更新される）
+        # redraw
         self.redraw()
 
-        # 4. 記録しておいた中心位置へスクロールを戻す
-        # movetoは「表示領域の左端」を指定するため、中心から表示幅の半分を引く
+        # offset
         view_width = x_right - x_left
         view_height = y_bottom - y_top
         
@@ -1238,21 +1146,19 @@ class ImageEditor:
         self.canvas.yview_moveto(center_y - view_height / 2)
 
     def zoom_wheel(self, e):
-        # Ctrl + Wheel: 縦スクロール
-        if e.state & 0x0004:  # 0x0004 は Control キー
+        # Ctrl + Wheel: vertical scroll
+        if e.state & 0x0004:  # Control key
             delta = -1 if e.delta > 0 else 1
             self.on_scrollbar_y("scroll", delta, "units")
             
-        # Shift + Wheel: 横スクロール
-        elif e.state & 0x0001:  # 0x0001 は Shift キー
+        # Shift + Wheel: horizontal scroll
+        elif e.state & 0x0001:  # Shift key
             delta = -1 if e.delta > 0 else 1
             self.on_scrollbar_x("scroll", delta, "units")
         else:
-            # ズーム前のマウス下のピクセル座標を記録
             mx = self.canvas.canvasx(e.x)
             my = self.canvas.canvasy(e.y)
 
-            # ズーム倍率変更
             i = self.zoom_scale.get()
             old_zoom = self.zoom
             if e.delta > 0 and i < len(self.zoom_levels) - 1:
@@ -1262,14 +1168,12 @@ class ImageEditor:
             
             if i == self.zoom_scale.get(): return
             
-            self.zoom_scale.set(i) # これで redraw() が呼ばれる
+            self.zoom_scale.set(i) # call redraw here
             self.zoom = self.zoom_levels[i] / 100.0
 
-            # ズーム後の「マウスがあったピクセル」の新しいCanvas座標
             new_mx = mx * (self.zoom / old_zoom)
             new_my = my * (self.zoom / old_zoom)
 
-            # 新しい座標がマウスの元の位置（e.x, e.y）に来るようにスクロール
             self.canvas.xview_moveto((new_mx - e.x) / (self.width * self.zoom))
             self.canvas.yview_moveto((new_my - e.y) / (self.height * self.zoom))
             self.redraw()
@@ -1280,34 +1184,24 @@ class ImageEditor:
         self.canvas.scan_dragto(e.x, e.y, gain=1)
         self.redraw()
     def draw_simutrans_guides(self):
-        # ズームに応じたサイズ
         b_size = self.build_paksize * self.zoom
         p_size = self.play_paksize * self.zoom
         
         zw, zh = int(self.width * self.zoom), int(self.height * self.zoom)
 
-        # 1. build_paksize ごとの区切り線
         for x in range(0, zw + 1, int(b_size)):
             self.canvas.create_line(x, 0, x, zh, fill="cyan", dash=(4, 4), tags="guide")
         for y in range(0, zh + 1, int(b_size)):
             self.canvas.create_line(0, y, zw, y, fill="cyan", dash=(4, 4), tags="guide")
 
-        # 2. play_paksize に準拠したベースタイル（菱形）の描画
-        # 各ビルド用正方形の中心から下側に配置
         if self.show_base_tile:
             for bx in range(0, int(self.width / self.build_paksize)):
                 for by in range(0, int(self.height / self.build_paksize)):
-                    # ビルド用正方形の中心（画像座標）
                     cx = (bx * self.build_paksize + self.build_paksize / 2) * self.zoom
-                    # 中心点から下側にplay_paksize分確保するための基準点
                     cy = (by * self.build_paksize + self.build_paksize / 2) * self.zoom + self.base_offset_y * self.zoom
-                    
-                    # 菱形の頂点計算 (play_paksizeの半分を半径とする)
+                
                     r_w = p_size / 2 
                     r_h = p_size / 4
-                    
-                    # 下側に基準を置くため、中心(cx, cy)から菱形を描画
-                    # Simutransのタイル接地形状（菱形）
                     points = [
                         cx, cy,       # 上
                         cx + r_w, cy + r_h,       # 右
@@ -1323,11 +1217,11 @@ class ImageEditor:
         self.canvas.delete("preview")
         self.canvas.delete("selection")
 
-        # 1. 表示範囲の取得
+        # 1. get area
         x_start, x_end = self.canvas.xview()
         y_start, y_end = self.canvas.yview()
 
-        # 2. 画像上の座標に変換
+        # 2. get pixel pos
         ix1 = int(x_start * self.width)
         iy1 = int(y_start * self.height)
         ix2 = int(np.ceil(x_end * self.width))
@@ -1338,7 +1232,7 @@ class ImageEditor:
 
         if ix2 <= ix1 or iy2 <= iy1: return
 
-        # 3. 表示範囲を切り出し
+        # 3. crop
         img_full = self.compose_layers()
         img_crop = img_full[iy1:iy2, ix1:ix2]
 
@@ -1346,29 +1240,29 @@ class ImageEditor:
         disp_w = int(crop_w * self.zoom)
         disp_h = int(crop_h * self.zoom)
 
-        # 4. 背景の市松模様を生成 (エラー修正ポイント)
+        # 4. bg
         bg_size = 8
         yy, xx = np.indices((disp_h, disp_w))
         
-        # オフセット計算（スクロールしても模様がズレないように調整）
+        # offset
         offset_x = int(ix1 * self.zoom) % (bg_size * 2)
         offset_y = int(iy1 * self.zoom) % (bg_size * 2)
         
         checker = ((xx + offset_x) // bg_size + (yy + offset_y) // bg_size) % 2
         
-        # 3チャンネル(RGB)の配列を確実に作成
+        # RGB data of BG
         bg_rgb = np.zeros((disp_h, disp_w, 3), dtype=np.uint8)
-        bg_rgb[checker == 0] = [220, 220, 220] # 明るいグレー
-        bg_rgb[checker == 1] = [190, 190, 190] # 濃いグレー
+        bg_rgb[checker == 0] = [220, 220, 220]
+        bg_rgb[checker == 1] = [190, 190, 190]
         
-        # PILに変換してからRGBAに
+        # PIL->RGBA
         bg_pil = Image.fromarray(bg_rgb, "RGB").convert("RGBA")
 
-        # 5. 前景を合成
+        # 5. back->front
         fg_pil = Image.fromarray(img_crop, "RGBA").resize((disp_w, disp_h), Image.NEAREST)
         bg_pil.alpha_composite(fg_pil)
 
-        # 6. Canvasに描画
+        # 6. draw in canvas
         self.tkimg = ImageTk.PhotoImage(bg_pil)
         self.canvas.delete("all")
 
@@ -1382,24 +1276,22 @@ class ImageEditor:
         self.canvas.delete("selection_ui")
         if self.tool == "select" and self.selection_rect:
             x1, y1, x2, y2 = self.selection_rect
-            # ズームを考慮した座標
+            # pos considered zoom ratio
             zx1, zy1 = x1 * self.zoom, y1 * self.zoom
             zx2, zy2 = x2 * self.zoom, y2 * self.zoom
             
-            # 白黒の点線にすることで、どんな背景でも見やすくする
             self.canvas.create_rectangle(zx1, zy1, zx2, zy2, 
                                          outline="white", dash=(4, 4), tags="selection_ui")
             self.canvas.create_rectangle(zx1, zy1, zx2, zy2, 
                                          outline="black", dash=(4, 4), dashoffset=4, tags="selection_ui")
 
-        # ---- Simutrans 補助線の描画 ----
-        self.canvas.delete("fixed_guide") # 古いガイドだけを消去
+        # ---- Simutrans line ----
+        self.canvas.delete("fixed_guide") # remove old guide
         if self.show_grid:
             self.draw_simutrans_guides()
 
         if self.floating_image is not None:
             f_img = Image.fromarray(self.floating_image, "RGBA")
-            # ズーム倍率に合わせてリサイズ
             zw, zh = int(f_img.width * self.zoom), int(f_img.height * self.zoom)
             if zw > 0 and zh > 0:
                 f_img = f_img.resize((zw, zh), Image.NEAREST)
@@ -1408,7 +1300,6 @@ class ImageEditor:
                                          self.floating_y * self.zoom, 
                                          anchor="nw", image=self.floating_tk, tags="floating")
 
-        # 全体サイズを維持
         zw, zh = int(self.width * self.zoom), int(self.height * self.zoom)
         self.canvas.config(scrollregion=(0, 0, zw, zh))
         
