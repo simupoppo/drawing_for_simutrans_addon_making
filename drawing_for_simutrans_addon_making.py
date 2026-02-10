@@ -249,9 +249,9 @@ class ImageEditor:
         body.pack(fill=tk.BOTH, expand=True)
 
         # ---- scroll bar ----
-        self.hbar = tk.Scrollbar(body, orient=tk.HORIZONTAL)
+        self.hbar = tk.Scrollbar(body, orient=tk.HORIZONTAL,command=self.on_scrollbar_x)
         self.hbar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.vbar = tk.Scrollbar(body, orient=tk.VERTICAL)
+        self.vbar = tk.Scrollbar(body, orient=tk.VERTICAL,command=self.on_scrollbar_y)
         self.vbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # ---- layer panel ----
@@ -263,8 +263,6 @@ class ImageEditor:
                                 xscrollcommand=self.hbar.set,
                                 yscrollcommand=self.vbar.set)
         self.canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        self.hbar.config(command=self.canvas.xview)
-        self.vbar.config(command=self.canvas.yview)
 
         # ---- footer ----
         self.info = tk.Label(main, anchor="w")
@@ -287,6 +285,8 @@ class ImageEditor:
         self.root.bind("<Control-y>", lambda e: self.redo())
         self.root.bind("<Escape>", self.clear_selection)
         self.root.bind("<Return>", lambda e: self.finalize_paste())
+        # self.canvas.bind("<Button-4>", self.on_linux_scroll_up)
+        # self.canvas.bind("<Button-5>", self.on_linux_scroll_down)
 
     def clear_selection(self, event=None):
         self.selection_rect = None
@@ -301,6 +301,13 @@ class ImageEditor:
         data[:size, size:] = c2
         data[size:, :size] = c2
         return ImageTk.PhotoImage(Image.fromarray(data, "RGBA"))
+    def on_scrollbar_x(self, *args):
+        self.canvas.xview(*args)
+        self.redraw()
+
+    def on_scrollbar_y(self, *args):
+        self.canvas.yview(*args)
+        self.redraw()
     # ================= Image I/O =================
     def open_image(self):
         path = filedialog.askopenfilename(filetypes=[("PNG", "*.png")])
@@ -1117,31 +1124,41 @@ class ImageEditor:
         self.canvas.yview_moveto(center_y - view_height / 2)
 
     def zoom_wheel(self, e):
-        # ズーム前のマウス下のピクセル座標を記録
-        mx = self.canvas.canvasx(e.x)
-        my = self.canvas.canvasy(e.y)
+        # Ctrl + Wheel: 縦スクロール
+        if e.state & 0x0004:  # 0x0004 は Control キー
+            delta = -1 if e.delta > 0 else 1
+            self.on_scrollbar_y("scroll", delta, "units")
+            
+        # Shift + Wheel: 横スクロール
+        elif e.state & 0x0001:  # 0x0001 は Shift キー
+            delta = -1 if e.delta > 0 else 1
+            self.on_scrollbar_x("scroll", delta, "units")
+        else:
+            # ズーム前のマウス下のピクセル座標を記録
+            mx = self.canvas.canvasx(e.x)
+            my = self.canvas.canvasy(e.y)
 
-        # ズーム倍率変更
-        i = self.zoom_scale.get()
-        old_zoom = self.zoom
-        if e.delta > 0 and i < len(self.zoom_levels) - 1:
-            i += 1
-        elif e.delta < 0 and i > 0:
-            i -= 1
-        
-        if i == self.zoom_scale.get(): return
-        
-        self.zoom_scale.set(i) # これで redraw() が呼ばれる
-        self.zoom = self.zoom_levels[i] / 100.0
+            # ズーム倍率変更
+            i = self.zoom_scale.get()
+            old_zoom = self.zoom
+            if e.delta > 0 and i < len(self.zoom_levels) - 1:
+                i += 1
+            elif e.delta < 0 and i > 0:
+                i -= 1
+            
+            if i == self.zoom_scale.get(): return
+            
+            self.zoom_scale.set(i) # これで redraw() が呼ばれる
+            self.zoom = self.zoom_levels[i] / 100.0
 
-        # ズーム後の「マウスがあったピクセル」の新しいCanvas座標
-        new_mx = mx * (self.zoom / old_zoom)
-        new_my = my * (self.zoom / old_zoom)
+            # ズーム後の「マウスがあったピクセル」の新しいCanvas座標
+            new_mx = mx * (self.zoom / old_zoom)
+            new_my = my * (self.zoom / old_zoom)
 
-        # 新しい座標がマウスの元の位置（e.x, e.y）に来るようにスクロール
-        self.canvas.xview_moveto((new_mx - e.x) / (self.width * self.zoom))
-        self.canvas.yview_moveto((new_my - e.y) / (self.height * self.zoom))
-        self.redraw()
+            # 新しい座標がマウスの元の位置（e.x, e.y）に来るようにスクロール
+            self.canvas.xview_moveto((new_mx - e.x) / (self.width * self.zoom))
+            self.canvas.yview_moveto((new_my - e.y) / (self.height * self.zoom))
+            self.redraw()
     def start_pan(self, e):
         self.canvas.scan_mark(e.x, e.y)
 
