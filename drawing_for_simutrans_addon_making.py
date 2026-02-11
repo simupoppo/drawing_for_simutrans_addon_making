@@ -842,6 +842,16 @@ class ImageEditor:
             dash=(4, 4),
             tags="preview"
         )
+        
+        info_text = f"({cur_ix-self.line_start[0]}, {cur_iy-self.line_start[1]})"
+        self.canvas.create_text(
+            x2 + 15, y2 + 15,
+            text=info_text,
+            fill=hex_color,
+            anchor="nw",
+            font=("Consolas", 10, "bold"), # 等幅フォントが見やすいです
+            tags="preview"
+        )
     def finalize_line(self, x1, y1, x2, y2):
         from PIL import Image, ImageDraw
 
@@ -1300,7 +1310,15 @@ class ImageEditor:
                 self.floating_tk = ImageTk.PhotoImage(f_img)
                 self.canvas.create_image(self.floating_x * self.zoom, 
                                          self.floating_y * self.zoom, 
-                                         anchor="nw", image=self.floating_tk, tags="floating")
+                                         anchor="nw", image=self.floating_tk, tags="floating")   
+            floating_x, floating_y = int(self.floating_x*self.zoom), int(self.floating_y*self.zoom)         
+            self.canvas.create_rectangle(
+                floating_x, floating_y, floating_x+zw, floating_y+zh,
+                outline="#222222",
+                width=2,
+                dash=(4, 4),
+                tags="floating_ui"
+            )
 
         zw, zh = int(self.width * self.zoom), int(self.height * self.zoom)
         self.canvas.config(scrollregion=(0, 0, zw, zh))
