@@ -5,7 +5,6 @@ from PIL import Image, ImageTk
 import numpy as np
 import change_image_paksize
 import png_merge_for_simutrans
-import lightmap_merging
 
 
 class ImageEditor:
@@ -59,6 +58,15 @@ class ImageEditor:
         self.base_offset_y = 0  # offset of the basement tile
         self.show_base_tile = True
         self.ALLOWED_SLOPES = [0, 3/8, 1/2, 5/8, 1, 3/2, float('inf')] # slope angle
+        self.special_color_list = [
+            [107,107,107],[155,155,155],[179,179,179],[201,201,201],[223,223,223],
+            [127,155,241],[255,255,83],[255,33,29],[1,221,1],[227,227,255],
+            [193,177,209],[77,77,77],[255,1,127],[1,1,255],[36,75,103],
+            [57,94,124],[76,113,145],[96,132,167],[116,151,189],[136,171,211],
+            [156,190,233],[176,210,255],[123,88,3],[142,111,4],[161,134,5],
+            [180,157,7],[198,180,8],[217,203,10],[236,226,11],[255,249,13]
+        ]
+        self.special_color_mode = False
 
         self.create_ui()
 
@@ -80,12 +88,13 @@ class ImageEditor:
 
         tab_file = tk.Frame(notebook)
         tab_edit = tk.Frame(notebook)
-        # tab_draw = tk.Frame(notebook)
+        tab_color = tk.Frame(notebook)
         tab_layer = tk.Frame(notebook)
         tab_process = tk.Frame(notebook)
 
         notebook.add(tab_file, text="File")
         notebook.add(tab_edit, text="Edit")
+        notebook.add(tab_color, text="Special Colors")
         # notebook.add(tab_draw, text="Draw")
         notebook.add(tab_layer, text="Layer")
         notebook.add(tab_process, text="Process")
@@ -95,6 +104,11 @@ class ImageEditor:
         tk.Button(tab_edit, text="Undo", command=self.undo).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Redo", command=self.redo).pack(side=tk.LEFT)
 
+        # special colors
+        self.create_palette_ui(tab_color)
+        self.view_mode_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(tab_color, text="Highlight Special Colors", variable=self.special_color_mode, 
+                       command=self.toggle_special_color_mode).pack(side=tk.LEFT)
         # create_ui
         self.tool_btns = {}
 
@@ -143,6 +157,12 @@ class ImageEditor:
         tk.Button(tab_layer, text="Export Layer", command=lambda:self.save_layer(-1)).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Export All Layer", command=self.save_all_layers).pack(side=tk.LEFT)
         tk.Button(tab_layer, text="Import to Layer", command=self.import_to_layer).pack(side=tk.LEFT)
+        merge_frame = tk.LabelFrame(tab_layer, text="Merge Layer Down")
+        merge_frame.pack(side=tk.LEFT, padx=5)
+
+        modes = [("Add", "add"), ("Mult", "multiply"), ("Replace", "replace"), ("Bright", "brightness"), ("Lightmap", "lightmap")]
+        for text, m in modes:
+            tk.Button(merge_frame, text=text, command=lambda mode=m: self.merge_layer(mode)).pack(side=tk.LEFT, padx=2)
         # --- Offset GUI ---
         off_ui_frame = tk.LabelFrame(tab_layer, text="Layer Offset")
         off_ui_frame.pack(side=tk.LEFT, padx=5, pady=2)
@@ -315,6 +335,14 @@ class ImageEditor:
     def on_scrollbar_y(self, *args):
         self.canvas.yview(*args)
         self.redraw()
+    
+    def check_simutrans_special_colors(self, rgb_array):
+        mask = np.zeros(rgb_array.shape[:2], dtype=bool)
+        
+        for color in self.special_color_list:
+            match = np.all(rgb_array == color, axis=-1)
+            mask |= match
+        return mask
     # ================= Image I/O =================
     def open_image(self):
         path = filedialog.askopenfilename(filetypes=[("PNG", "*.png")])
@@ -351,6 +379,84 @@ class ImageEditor:
             Image.fromarray(out, "RGBA").save(path)
 
     # ================= Layers =================
+    def merge_layer(self, mode="add"):
+        if self.active_layer <= 0:
+            return
+        import copy
+        self.undo_stack.append(("whole_layers", copy.deepcopy(self.layers), self.active_layer))
+        self.redo_stack.clear()
+
+        upper_idx = self.active_layer
+        lower_idx = self.active_layer - 1
+
+        upper = self.layers[upper_idx]
+        lower = self.layers[lower_idx]
+
+        ux, uy = upper.get("off_x", 0), upper.get("off_y", 0)
+        lx, ly = lower.get("off_x", 0), lower.get("off_y", 0)
+        u_img = upper["img"].astype(np.float32)
+        l_img = lower["img"].astype(np.float32)
+        uh, uw = u_img.shape[:2]
+        lh, lw = l_img.shape[:2]
+
+        # reset canvas pos
+        new_x = min(ux, lx)
+        new_y = min(uy, ly)
+        new_w = max(ux + uw, lx + lw) - new_x
+        new_h = max(uy + uh, ly + lh) - new_y
+
+        merged_img = np.zeros((new_h, new_w, 4), dtype=np.float32)
+
+        merged_img[ly-new_y : ly-new_y+lh, lx-new_x : lx-new_x+lw] = l_img
+
+        # calc merging pos
+        tx1, ty1 = ux - new_x, uy - new_y
+        tx2, ty2 = tx1 + uw, ty1 + uh
+
+        # special color?
+        upper_special = self.check_simutrans_special_colors(u_img[..., :3])
+
+        target_area = merged_img[ty1:ty2, tx1:tx2]
+        lower_special = self.check_simutrans_special_colors(target_area[..., :3])
+        is_not_transparent = u_img[..., 3] > 0
+        is_not_sim_bg = ~(np.all(u_img[..., :3] == [231, 255, 255], axis=-1))
+        calc_mask = is_not_transparent & is_not_sim_bg & (~upper_special) & (~lower_special)
+
+        if mode == "add":
+            target_area[calc_mask, :3] += u_img[calc_mask, :3]
+            
+        elif mode == "multiply":
+            target_area[calc_mask, :3] = (target_area[calc_mask, :3] / 255.0 * u_img[calc_mask, :3] / 255.0) * 255.0
+            
+        elif mode == "replace":
+            target_area[calc_mask] = u_img[calc_mask]
+        
+        elif mode == "lightmap":
+            target_area[calc_mask, :3] = (target_area[calc_mask, :3] * u_img[calc_mask, :3] /128.0 )
+            
+        elif mode == "brightness":
+            target_area[calc_mask, :3] = np.maximum(target_area[calc_mask, :3], 
+                                                    u_img[calc_mask, :3])
+        if mode != "replace":
+            special_overwrite = is_not_transparent & is_not_sim_bg & (upper_special | lower_special)
+            target_area[special_overwrite] = u_img[special_overwrite]
+
+        target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3], u_img[calc_mask, 3])
+
+        final_img = np.clip(merged_img, 0, 255).astype(np.uint8)
+
+        self.save_full_undo(lower_idx)
+        self.layers[lower_idx] = {
+            "img": final_img,
+            "visible": True,
+            "off_x": new_x,
+            "off_y": new_y
+        }
+        self.layers.pop(upper_idx)
+        self.active_layer = lower_idx
+        
+        self.refresh_layer_panel()
+        self.redraw()
     def add_layer(self):
         if not self.layers:
             return
@@ -535,6 +641,29 @@ class ImageEditor:
             return
         for i in range(len(self.layers)):
             self.save_layer(i)
+    def get_emphasized_image(self, img_array):
+        # 元画像を float32 に変換してコピー
+        temp_img = img_array.astype(np.float32)
+        
+        # 特殊色のマスクを取得
+        special_mask = self.check_simutrans_special_colors(temp_img[..., :3])
+        
+        # 特殊色『以外』のピクセルを特定 (背景色も除く)
+        is_bg = np.all(temp_img[..., :3] == [231, 255, 255], axis=-1)
+        target_mask = (~special_mask) & (~is_bg) & (temp_img[..., 3] > 0)
+        
+        # --- 特殊色以外の加工 ---
+        # 1. グレースケール化 (標準的な輝度計算)
+        gray = temp_img[target_mask, 0] * 0.299 + \
+               temp_img[target_mask, 1] * 0.587 + \
+               temp_img[target_mask, 2] * 0.114
+        
+        # 2. 暗くする (例: 輝度を30%に)
+        temp_img[target_mask, 0] = gray * 0.3
+        temp_img[target_mask, 1] = gray * 0.3
+        temp_img[target_mask, 2] = gray * 0.3
+        
+        return np.clip(temp_img, 0, 255).astype(np.uint8)
     # ================= Tools =================
     def set_tool(self, tool_name):
         if self.tool == "move_paste" and tool_name != "move_paste":
@@ -564,6 +693,26 @@ class ImageEditor:
         if c[0]:
             self.draw_color[:3] = np.array(c[0], dtype=np.uint8)
             self.update_color_preview()
+    def create_palette_ui(self, parent_frame):
+        palette_frame = tk.LabelFrame(parent_frame, text="Simutrans Special Colors")
+        palette_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        for i, rgb in enumerate(self.special_color_list):
+            hex_color = "#{:02x}{:02x}{:02x}".format(*rgb)
+            
+            # 色見本ボタン
+            btn = tk.Button(
+                palette_frame, 
+                bg=hex_color, 
+                width=2, 
+                height=1,
+                command=lambda c=rgb: self.set_brush_color(c)
+            )
+            btn.grid(row=i // 16, column=i % 16, padx=1, pady=1)
+
+    def set_brush_color(self, rgb):
+        self.draw_color[:3]=rgb
+        self.update_color_preview()
 
     def set_alpha(self, v):
         self.draw_color[3] = min(int(v),255)
@@ -1113,7 +1262,8 @@ class ImageEditor:
             "img": img_copy
         })
     def undo(self):
-        if not self.undo_stack: return
+        if not self.undo_stack:
+            return
         stroke = self.undo_stack.pop()
 
         if isinstance(stroke, dict) and "full_img" in stroke:
@@ -1122,40 +1272,55 @@ class ImageEditor:
             self.layers[l_idx]["img"] = stroke["full_img"]
             self.redo_stack.append({"layer_idx": l_idx, "full_img": current_back})
             return
+        if isinstance(stroke, tuple) and stroke[0] == "whole_layers":
+            import copy
+            self.redo_stack.append(("whole_layers", copy.deepcopy(self.layers), self.active_layer))
+            
+            self.layers = stroke[1]
+            self.active_layer = stroke[2]
+        else:
+            if isinstance(stroke, tuple) and stroke[0] == "move_layer":
+                _, src, dst = stroke
+                self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
+                self.redo_stack.append(("move_layer", dst, src))
+                self.active_layer = src
+                self.refresh_layer_panel()
+                self.redraw()
+                return
+            redo = []
+            for l, x, y, before in stroke:
+                redo.append((l, x, y, self.layers[l]["img"][y, x].copy()))
+                self.layers[l]["img"][y, x] = before
+            self.redo_stack.append(redo)
 
-        if isinstance(stroke, tuple) and stroke[0] == "move_layer":
-            _, src, dst = stroke
-            self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
-            self.redo_stack.append(("move_layer", dst, src))
-            self.active_layer = src
-            self.refresh_layer_panel()
-            self.redraw()
-            return
-        redo = []
-        for l, x, y, before in stroke:
-            redo.append((l, x, y, self.layers[l]["img"][y, x].copy()))
-            self.layers[l]["img"][y, x] = before
-        self.redo_stack.append(redo)
+        self.refresh_layer_panel()
         self.redraw()
 
     def redo(self):
         if not self.redo_stack:
             return
         stroke = self.redo_stack.pop()
-
-        if isinstance(stroke, tuple) and stroke[0] == "move_layer":
-            _, src, dst = stroke
-            self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
-            self.undo_stack.append(("move_layer", dst, src))
-            self.active_layer = dst
-            self.refresh_layer_panel()
-            self.redraw()
-            return
-        undo = []
-        for l, x, y, before in stroke:
-            undo.append((l, x, y, self.layers[l]["img"][y, x].copy()))
-            self.layers[l]["img"][y, x] = before
-        self.undo_stack.append(undo)
+        if isinstance(stroke, tuple) and stroke[0] == "whole_layers":
+            import copy
+            self.undo_stack.append(("whole_layers", copy.deepcopy(self.layers), self.active_layer))
+            
+            self.layers = stroke[1]
+            self.active_layer = stroke[2]
+        else:
+            if isinstance(stroke, tuple) and stroke[0] == "move_layer":
+                _, src, dst = stroke
+                self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
+                self.undo_stack.append(("move_layer", dst, src))
+                self.active_layer = dst
+                self.refresh_layer_panel()
+                self.redraw()
+                return
+            undo = []
+            for l, x, y, before in stroke:
+                undo.append((l, x, y, self.layers[l]["img"][y, x].copy()))
+                self.layers[l]["img"][y, x] = before
+            self.undo_stack.append(undo)
+        self.refresh_layer_panel()
         self.redraw()
     def start_offset_loop(self, dx, dy):
         self.offset_layer(dx, dy)
@@ -1278,7 +1443,9 @@ class ImageEditor:
                         cx - r_w, cy + r_h       # 左
                     ]
                     self.canvas.create_polygon(points, fill="", outline="yellow", width=1, tags="guide")
-
+    def toggle_special_color_mode(self):
+        self.special_color_mode = not self.special_color_mode
+        self.redraw()
     # ================= Rendering =================
     def redraw(self):
         if not self.layers or self.width == 0:
@@ -1301,8 +1468,13 @@ class ImageEditor:
 
         if ix2 <= ix1 or iy2 <= iy1: return
 
+
         # 3. crop
         img_full = self.compose_layers()
+        
+        if self.special_color_mode:
+            print("show special color's region")
+            img_full = self.get_emphasized_image(img_full)
         img_crop = img_full[iy1:iy2, ix1:ix2]
 
         crop_h, crop_w = img_crop.shape[:2]
