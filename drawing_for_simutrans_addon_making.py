@@ -5,6 +5,7 @@ from PIL import Image, ImageTk
 import numpy as np
 import change_image_paksize
 import png_merge_for_simutrans
+import lightmap_merging
 
 
 class ImageEditor:
@@ -127,7 +128,9 @@ class ImageEditor:
 
         # Edit
         tk.Button(tab_edit, text="Copy", command=self.copy_selection).pack(side=tk.LEFT)
+        tk.Button(tab_edit, text="Cut", command=self.cut_selection).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Paste", command=self.paste_image).pack(side=tk.LEFT)
+        tk.Button(tab_edit, text="Clear Outside", command=self.clear_outside_selection).pack(side=tk.LEFT)
         self.btn_confirm = tk.Button(tab_edit, text="Confirm Paste", bg="#ffcc00", 
                                      command=self.finalize_paste)
         self.btn_confirm.pack(side=tk.LEFT, padx=5)
@@ -286,6 +289,8 @@ class ImageEditor:
         self.root.bind("<Control-v>", lambda e: self.paste_image())
         self.root.bind("<Control-z>", lambda e: self.undo())
         self.root.bind("<Control-y>", lambda e: self.redo())
+        self.root.bind("<Control-x>", lambda e: self.cut_selection())
+        self.root.bind("<Control-a>", lambda e: self.select_all())
         self.root.bind("<Escape>", self.clear_selection)
         self.root.bind("<Return>", lambda e: self.finalize_paste())
         # self.canvas.bind("<Button-4>", self.on_linux_scroll_up)
@@ -674,12 +679,14 @@ class ImageEditor:
             self.drag_start_pos = (ix, iy)
             self.drag_start_offset = (layer.get("off_x", 0), layer.get("off_y", 0))
         elif self.tool == "pipette":
-            layer = self.layers[self.active_layer]["img"]
+            layers = self.layers[self.active_layer]
+            ox, oy = layers.get("off_x", 0), layers.get("off_y", 0)
+            layer = layers["img"]
             if 0 <= ix < self.width and 0 <= iy < self.height:
-                self.draw_color = layer[iy, ix].copy()
+                self.draw_color = layer[iy-oy, ix-ox].copy()
                 self.alpha.set(self.draw_color[3])
                 self.update_color_preview()
-            self.tool = "pen"
+            self.set_tool("pen")
         elif self.tool == "eraser":
             self.paint(ix, iy, True)
         elif self.tool == "fill":
@@ -869,6 +876,14 @@ class ImageEditor:
 
         self.redraw()
     # ================= Using Changing Tools =================
+    def select_all(self):
+        if not self.layers:
+            return
+        self.set_tool("select")
+        iy=len(self.layers[self.active_layer]["img"])
+        ix=len(self.layers[self.active_layer]["img"][0])
+        self.selection_rect=[0,0,ix,iy]
+
     def normalize_active_layer(self):
         if not self.layers:
             return
@@ -1046,6 +1061,48 @@ class ImageEditor:
         self.floating_image = None
         self.set_tool("pen")
         self.redraw()
+    def cut_selection(self):
+        if not self.layers or self.selection_rect is None:
+            return
+
+        self.copy_selection()
+
+        x1, y1, x2, y2 = self.selection_rect
+        xmin, xmax = sorted([x1, x2])
+        ymin, ymax = sorted([y1, y2])
+
+        xmin, xmax = max(0, xmin), min(self.width, xmax + 1)
+        ymin, ymax = max(0, ymin), min(self.height, ymax + 1)
+
+        layer_img = self.layers[self.active_layer]["img"]
+        
+        self.save_full_undo(self.active_layer)
+
+        layer_img[ymin:ymax, xmin:xmax] = [0, 0, 0, 0]
+
+        self.redraw()
+
+    def clear_outside_selection(self):
+        if not self.layers or self.selection_rect is None:
+            return
+
+        self.save_full_undo(self.active_layer)
+        layer_img = self.layers[self.active_layer]["img"]
+        
+        x1, y1, x2, y2 = self.selection_rect
+        xmin, xmax = sorted([x1, x2])
+        ymin, ymax = sorted([y1, y2])
+
+        new_img = np.zeros_like(layer_img)
+        
+        xmin, xmax = max(0, xmin), min(self.width, xmax + 1)
+        ymin, ymax = max(0, ymin), min(self.height, ymax + 1)
+        
+        new_img[ymin:ymax, xmin:xmax] = layer_img[ymin:ymax, xmin:xmax]
+        
+        self.layers[self.active_layer]["img"] = new_img
+        self.redraw()
+        
 
     # ================= Undo / Redo =================
     def save_full_undo(self, layer_idx):
