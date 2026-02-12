@@ -1453,6 +1453,16 @@ class ImageEditor:
         self.canvas.delete("preview")
         self.canvas.delete("selection")
 
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+
+        full_w = self.width * self.zoom
+        full_h = self.height * self.zoom
+
+        region_w = max(cw, full_w)
+        region_h = max(ch, full_h)
+        self.canvas.config(scrollregion=(0, 0, region_w, region_h))
+
         # 1. get area
         x_start, x_end = self.canvas.xview()
         y_start, y_end = self.canvas.yview()
