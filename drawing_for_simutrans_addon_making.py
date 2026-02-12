@@ -1407,19 +1407,9 @@ class ImageEditor:
         # Shift + Wheel: horizontal scroll
         elif e.state & 0x0001:  # Shift key
             delta = -1 if e.delta > 0 else 1
-            # current position
-            view = self.canvas.xview()
-            # do not need move more
-            if (delta < 0 and view[0] <= 0.0) or (delta > 0 and view[1] >= 1.0):
-                return
             self.on_scrollbar_x("scroll", delta, "units")
         else: #vertical scroll
             delta = -1 if e.delta > 0 else 1
-            # current position
-            view = self.canvas.yview()
-            # do not need move more
-            if (delta < 0 and view[0] <= 0.0) or (delta > 0 and view[1] >= 1.0):
-                return
             self.on_scrollbar_y("scroll", delta, "units")
     def start_pan(self, e):
         self.canvas.scan_mark(e.x, e.y)
