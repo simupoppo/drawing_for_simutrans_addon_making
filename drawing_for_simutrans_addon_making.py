@@ -1380,16 +1380,8 @@ class ImageEditor:
         self.canvas.yview_moveto(center_y - view_height / 2)
 
     def zoom_wheel(self, e):
-        # Ctrl + Wheel: vertical scroll
+        # Ctrl + Wheel: zoom
         if e.state & 0x0004:  # Control key
-            delta = -1 if e.delta > 0 else 1
-            self.on_scrollbar_y("scroll", delta, "units")
-            
-        # Shift + Wheel: horizontal scroll
-        elif e.state & 0x0001:  # Shift key
-            delta = -1 if e.delta > 0 else 1
-            self.on_scrollbar_x("scroll", delta, "units")
-        else:
             mx = self.canvas.canvasx(e.x)
             my = self.canvas.canvasy(e.y)
 
@@ -1411,6 +1403,16 @@ class ImageEditor:
             self.canvas.xview_moveto((new_mx - e.x) / (self.width * self.zoom))
             self.canvas.yview_moveto((new_my - e.y) / (self.height * self.zoom))
             self.redraw()
+            
+        # Shift + Wheel: horizontal scroll
+        elif e.state & 0x0001:  # Shift key
+            delta = -1 if e.delta > 0 else 1
+            self.on_scrollbar_x("scroll", delta, "units")
+        
+        # Wheel only: vertical scroll
+        else:
+            delta = -1 if e.delta > 0 else 1
+            self.on_scrollbar_y("scroll", delta, "units")
     def start_pan(self, e):
         self.canvas.scan_mark(e.x, e.y)
 
@@ -1424,9 +1426,9 @@ class ImageEditor:
         zw, zh = int(self.width * self.zoom), int(self.height * self.zoom)
 
         for x in range(0, zw + 1, int(b_size)):
-            self.canvas.create_line(x, 0, x, zh, fill="cyan", dash=(4, 4), tags="guide")
+            self.canvas.create_line(x, 0, x, zh, fill="cyan", dash=(4, 4), tags="fixed_guide")
         for y in range(0, zh + 1, int(b_size)):
-            self.canvas.create_line(0, y, zw, y, fill="cyan", dash=(4, 4), tags="guide")
+            self.canvas.create_line(0, y, zw, y, fill="cyan", dash=(4, 4), tags="fixed_guide")
 
         if self.show_base_tile:
             for bx in range(0, int(self.width / self.build_paksize)):
@@ -1442,7 +1444,7 @@ class ImageEditor:
                         cx, cy + 2*r_h,       # 下
                         cx - r_w, cy + r_h       # 左
                     ]
-                    self.canvas.create_polygon(points, fill="", outline="yellow", width=1, tags="guide")
+                    self.canvas.create_polygon(points, fill="", outline="yellow", width=1, tags="fixed_guide")
     def toggle_special_color_mode(self):
         self.special_color_mode = not self.special_color_mode
         self.redraw()
