@@ -1380,16 +1380,8 @@ class ImageEditor:
         self.canvas.yview_moveto(center_y - view_height / 2)
 
     def zoom_wheel(self, e):
-        # Ctrl + Wheel: vertical scroll
+        # Ctrl + Wheel: zoom
         if e.state & 0x0004:  # Control key
-            delta = -1 if e.delta > 0 else 1
-            self.on_scrollbar_y("scroll", delta, "units")
-            
-        # Shift + Wheel: horizontal scroll
-        elif e.state & 0x0001:  # Shift key
-            delta = -1 if e.delta > 0 else 1
-            self.on_scrollbar_x("scroll", delta, "units")
-        else:
             mx = self.canvas.canvasx(e.x)
             my = self.canvas.canvasy(e.y)
 
@@ -1411,6 +1403,24 @@ class ImageEditor:
             self.canvas.xview_moveto((new_mx - e.x) / (self.width * self.zoom))
             self.canvas.yview_moveto((new_my - e.y) / (self.height * self.zoom))
             self.redraw()
+            
+        # Shift + Wheel: horizontal scroll
+        elif e.state & 0x0001:  # Shift key
+            delta = -1 if e.delta > 0 else 1
+            # current position
+            view = self.canvas.xview()
+            # do not need move more
+            if (delta < 0 and view[0] <= 0.0) or (delta > 0 and view[1] >= 1.0):
+                return
+            self.on_scrollbar_x("scroll", delta, "units")
+        else: #vertical scroll
+            delta = -1 if e.delta > 0 else 1
+            # current position
+            view = self.canvas.yview()
+            # do not need move more
+            if (delta < 0 and view[0] <= 0.0) or (delta > 0 and view[1] >= 1.0):
+                return
+            self.on_scrollbar_y("scroll", delta, "units")
     def start_pan(self, e):
         self.canvas.scan_mark(e.x, e.y)
 
