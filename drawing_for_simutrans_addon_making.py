@@ -1382,8 +1382,13 @@ class ImageEditor:
     def zoom_wheel(self, e):
         # Ctrl + Wheel: zoom
         if e.state & 0x0004:  # Control key
-            mx = self.canvas.canvasx(e.x)
-            my = self.canvas.canvasy(e.y)
+            mx = self.canvas.canvasx(e.x)/self.zoom
+            my = self.canvas.canvasy(e.y)/self.zoom
+
+            ini_start_x,ini_end_x = self.canvas.xview()
+            ini_start_x *= self.width
+            ini_start_y,ini_end_y = self.canvas.yview()
+            ini_start_y *= self.height
 
             i = self.zoom_scale.get()
             old_zoom = self.zoom
@@ -1397,11 +1402,10 @@ class ImageEditor:
             self.zoom_scale.set(i) # call redraw here
             self.zoom = self.zoom_levels[i] / 100.0
 
-            new_mx = mx * (self.zoom / old_zoom)
-            new_my = my * (self.zoom / old_zoom)
-
-            self.canvas.xview_moveto((new_mx - e.x) / (self.width * self.zoom))
-            self.canvas.yview_moveto((new_my - e.y) / (self.height * self.zoom))
+            moveto_x = (mx-(mx-ini_start_x)/(self.zoom)*old_zoom)
+            moveto_y = (my-(my-ini_start_y)/(self.zoom)*old_zoom)
+            self.canvas.xview_moveto(moveto_x/self.width/old_zoom*self.zoom)
+            self.canvas.yview_moveto(moveto_y/self.height/old_zoom*self.zoom)
             self.redraw()
             
         # Shift + Wheel: horizontal scroll
