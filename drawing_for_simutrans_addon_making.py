@@ -424,24 +424,26 @@ class ImageEditor:
 
         if mode == "add":
             target_area[calc_mask, :3] += u_img[calc_mask, :3]
-            
+            target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3] + u_img[calc_mask, 3], 255.0)
         elif mode == "multiply":
             target_area[calc_mask, :3] = (target_area[calc_mask, :3] / 255.0 * u_img[calc_mask, :3] / 255.0) * 255.0
+            target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3] * u_img[calc_mask, 3] / 255.0, 255.0)
             
         elif mode == "replace":
             target_area[calc_mask] = u_img[calc_mask]
         
         elif mode == "lightmap":
             target_area[calc_mask, :3] = (target_area[calc_mask, :3] * u_img[calc_mask, :3] /128.0 )
+            target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3] * u_img[calc_mask, 3] / 255.0, 255.0)
             
         elif mode == "brightness":
             target_area[calc_mask, :3] = np.maximum(target_area[calc_mask, :3], 
                                                     u_img[calc_mask, :3])
+            target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3], u_img[calc_mask, 3])
         if mode != "replace":
             special_overwrite = is_not_transparent & is_not_sim_bg & (upper_special | lower_special)
             target_area[special_overwrite] = u_img[special_overwrite]
 
-        target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3], u_img[calc_mask, 3])
 
         final_img = np.clip(merged_img, 0, 255).astype(np.uint8)
 
