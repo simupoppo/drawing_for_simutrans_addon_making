@@ -424,17 +424,17 @@ class ImageEditor:
 
         if mode == "add":
             target_area[calc_mask, :3] += u_img[calc_mask, :3]
-            target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3] + u_img[calc_mask, 3], 255.0)
+            target_area[calc_mask, 3] = np.minimum(target_area[calc_mask, 3] + u_img[calc_mask, 3], 255.0)
         elif mode == "multiply":
             target_area[calc_mask, :3] = (target_area[calc_mask, :3] / 255.0 * u_img[calc_mask, :3] / 255.0) * 255.0
-            target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3] * u_img[calc_mask, 3] / 255.0, 255.0)
+            target_area[calc_mask, 3] = np.minimum(target_area[calc_mask, 3] * u_img[calc_mask, 3] / 255.0, 255.0)
             
         elif mode == "replace":
             target_area[calc_mask] = u_img[calc_mask]
         
         elif mode == "lightmap":
             target_area[calc_mask, :3] = (target_area[calc_mask, :3] * u_img[calc_mask, :3] /128.0 )
-            target_area[calc_mask, 3] = np.maximum(target_area[calc_mask, 3] * u_img[calc_mask, 3] / 255.0, 255.0)
+            target_area[calc_mask, 3] = np.minimum(target_area[calc_mask, 3] * u_img[calc_mask, 3] / 255.0, 255.0)
             
         elif mode == "brightness":
             target_area[calc_mask, :3] = np.maximum(target_area[calc_mask, :3], 
