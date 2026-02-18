@@ -420,7 +420,10 @@ class ImageEditor:
         lower_special = self.check_simutrans_special_colors(target_area[..., :3])
         is_not_transparent = u_img[..., 3] > 0
         is_not_sim_bg = ~(np.all(u_img[..., :3] == [231, 255, 255], axis=-1))
-        calc_mask = is_not_transparent & is_not_sim_bg & (~upper_special) & (~lower_special)
+        if(  mode=="lightmap"  ):
+            calc_mask = (~upper_special) & (~lower_special)
+        else:
+            calc_mask = is_not_transparent & is_not_sim_bg & (~upper_special) & (~lower_special)
 
         if mode == "add":
             target_area[calc_mask, :3] += u_img[calc_mask, :3]
