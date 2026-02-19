@@ -421,7 +421,7 @@ class ImageEditor:
         is_not_transparent = u_img[..., 3] > 0
         is_not_sim_bg = ~(np.all(u_img[..., :3] == [231, 255, 255], axis=-1))
         if(  mode=="lightmap"  ):
-            calc_mask = (~upper_special) & (~lower_special)
+            calc_mask = (~upper_special) & is_not_sim_bg
         else:
             calc_mask = is_not_transparent & is_not_sim_bg & (~upper_special) & (~lower_special)
 
@@ -1220,10 +1220,15 @@ class ImageEditor:
             return
 
         self.copy_selection()
-
+        layer_dict = self.layers[self.active_layer]
+        img = layer_dict["img"]
+        ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
         x1, y1, x2, y2 = self.selection_rect
-        xmin, xmax = sorted([x1, x2])
-        ymin, ymax = sorted([y1, y2])
+        sx, ex = sorted([x1, x2])
+        sy, ey = sorted([y1, y2])
+
+        xmin, ymin = max(0, sx - ox), max(0, sy - oy)
+        xmax, ymax = min(img.shape[1], ex - ox), min(img.shape[0], ey - oy)
 
         xmin, xmax = max(0, xmin), min(self.width, xmax + 1)
         ymin, ymax = max(0, ymin), min(self.height, ymax + 1)
