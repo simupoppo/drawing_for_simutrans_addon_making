@@ -140,6 +140,16 @@ class ImageEditor:
         btn_select.pack(side=tk.LEFT)
         self.tool_btns["select"] = btn_select
 
+        # rectangle
+        btn_rect = tk.Button(bar, text="Rect", command=lambda: self.set_tool("rect"))
+        btn_rect.pack(side=tk.LEFT)
+        self.tool_btns["rect"] = btn_rect
+
+        self.rect_mode = tk.StringVar(value="box") # box, h_para, d_para
+        rect_options = [("Box", "box"), ("H-Para", "h_para"), ("D-Para", "d_para")]
+        for text, mode in rect_options:
+            tk.Radiobutton(bar, text=text, variable=self.rect_mode, value=mode).pack(side=tk.LEFT)
+
         # Edit
         tk.Button(tab_edit, text="Copy", command=self.copy_selection).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Cut", command=self.cut_selection).pack(side=tk.LEFT)
@@ -805,6 +815,32 @@ class ImageEditor:
         except ValueError:
             from tkinter import messagebox
             messagebox.showerror("Error", "Valid paksize required")
+    def get_rect_points(self, x1, y1, x2, y2, mode):
+        if mode == "box":
+            return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+        
+        elif mode == "h_para":
+            dx = x2 - x1
+            dy = y2 - y1
+            dy_slope = np.sign(dx)* (abs(dx) // 2)
+            
+            if dx*dy>0:
+                if abs(dy_slope) < abs(dy):
+                    return[(x1, y1), (x2, y1 + dy_slope), (x2, y2), (x1, y2 - dy_slope)]
+                return[(x1, y1), (x1 + dy*2, y2), (x2, y2), (x2 - dy*2, y1)]
+            else:
+                if abs(dy_slope) < abs(dy):
+                    return[(x1, y1), (x2, y1 - dy_slope), (x2, y2), (x1, y2 + dy_slope)]
+                return[(x1, y1), (x1 - dy*2, y2), (x2, y2), (x2 + dy*2, y1)]
+
+        elif mode == "d_para":
+            dx = x2 - x1
+            dy = y2 - y1
+            dy_slope = np.sign(dx)* (abs(dx) // 2)
+            return [(x1, y1), (x1+dy+dy_slope, y1+(dy+dy_slope)//2), (x2,y2), (x1-dy+dy_slope, y1+(dy-dy_slope)//2)]
+
+        
+        return []
     # ================= Drawing =================
     def canvas_to_image(self, x, y):
         cx = self.canvas.canvasx(x)
@@ -827,6 +863,10 @@ class ImageEditor:
         if self.tool == "line":
             self.line_start = (ix, iy)
             self.drag_start_pos = (ix, iy)
+            return
+        if self.tool == "rect":
+            self.line_start = (ix, iy) # 始点を保持
+            self.save_full_undo(self.active_layer) # 描画前にUndo保存
             return
         if self.tool == "move":
             layer = self.layers[self.active_layer]
@@ -867,6 +907,15 @@ class ImageEditor:
             self.redraw()
             self.draw_preview_line(ix, iy)
             return
+        if self.tool == "rect":
+            self.redraw()
+            pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+            for i in range(len(pts)):
+                p1 = pts[i]
+                p2 = pts[(i+1)%4]
+                self.canvas.create_line(p1[0]*self.zoom, p1[1]*self.zoom, 
+                                        p2[0]*self.zoom, p2[1]*self.zoom, fill="white", dash=(4,4))
+            return
         if self.tool == "select":
             if self.selection_rect:
                 self.selection_rect[2] = ix
@@ -892,6 +941,45 @@ class ImageEditor:
                 ix, iy = self.snap_coordinate(x1, y1, ix, iy)
             
             self.finalize_line(x1, y1, ix, iy)
+            return
+        if self.tool == "rect" and self.line_start:
+            pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+            for i in range(len(pts)):
+                x1, y1 = pts[i][0],pts[i][1]
+                x2, y2 = pts[(i+1)%4][0],pts[(i+1)%4][1]
+                if y1==y2:
+                    x1, x2 = min(x1,x2)-1, max(x1,x2)
+                elif x1==x2:
+                    y1, y2 = min(y1,y2)-1, max(y1,y2)
+                else:
+                    if y1<y2 and x1<x2:
+                        y2+=1
+                        x2+=1
+                    elif y1>y2 and x1>x2:
+                        y1+=1
+                        x1+=1
+                    elif y1<y2 and x1>x2:
+                        y2+=1
+                        x2-=1
+                    elif y1>y2 and x1<x2:
+                        y1+=1
+                        x1-=1
+                if self.rect_mode.get() == "d_para":
+                    x_ref3, y_ref3 = pts[(i+2)%4][0],pts[(i+2)%4][1]
+                    x_ref4, y_ref4 = pts[(i+3)%4][0],pts[(i+3)%4][1]
+                    xmax = max(x1,x2,x_ref3,x_ref4)
+                    if xmax == x1 or xmax == x2:
+                        x1+=1
+                        x2+=1
+                    ymax = max(y1,y2,y_ref3,y_ref4)
+                    if ymax == y1 or ymax == y2:
+                        y1-=1
+                        y2-=1
+
+
+                self.finalize_line(x1, y1, x2, y2)
+            self.line_start = None
+            self.redraw()
             return
         if self.tool == "select" and self.selection_rect:
             x1, y1, x2, y2 = self.selection_rect
@@ -1014,19 +1102,35 @@ class ImageEditor:
             tags="preview"
         )
     def finalize_line(self, x1, y1, x2, y2):
-        from PIL import Image, ImageDraw
-
         layer_dict = self.layers[self.active_layer]
-        img = layer_dict["img"]
+        layer_img = layer_dict["img"]
+        ox = layer_dict.get("off_x", 0)
+        oy = layer_dict.get("off_y", 0)
+        color = self.draw_color
+
+        dx = x2-x1
+        dy = y2-y1
+        if dx*dx+dy*dy==0:
+            # no line
+            return
+        signx = int(np.sign(dx))
+        signy = int(np.sign(dy))
+        startx = min(x1,x2)
+        starty = min(y1,y2)
         
         self.save_full_undo(self.active_layer)
+        print(f"draw line from {x1},{y1} to {x2},{y2}, ({dx},{dy})")
 
-        pil_img = Image.fromarray(img)
-        draw = ImageDraw.Draw(pil_img)
-
-        draw.line([(x1, y1), (x2, y2)], fill=tuple(self.draw_color), width=1)
-
-        layer_dict["img"] = np.array(pil_img, dtype=np.uint8)
+        if abs(dx)<abs(dy):
+            for i in range(abs(dy)):
+                temp_x = startx+((i)*abs(dx)//abs(dy))-ox
+                temp_y = (starty + i if (signx*signy>0) else max(y1,y2) - i)-oy
+                layer_img[temp_y,temp_x]=color
+        else:
+            for i in range(abs(dx)):
+                temp_x = (startx + i if (signx*signy>0) else max(x1,x2) - i)-ox
+                temp_y = starty+((i)*abs(dy)//abs(dx))-oy
+                layer_img[temp_y,temp_x]=color
 
         self.redraw()
     # ================= Using Changing Tools =================
