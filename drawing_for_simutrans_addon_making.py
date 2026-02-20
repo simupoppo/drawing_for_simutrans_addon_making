@@ -551,7 +551,8 @@ class ImageEditor:
 
     def delete_layer(self):
         if len(self.layers) <= 1:
-            return # 最後の1枚は消さない
+            # only 1 layer, not delete it
+            return
         
         self.layers.pop(self.active_layer)
         self.active_layer = max(0, self.active_layer - 1)
@@ -687,23 +688,17 @@ class ImageEditor:
         for i in range(len(self.layers)):
             self.save_layer(i)
     def get_emphasized_image(self, img_array):
-        # 元画像を float32 に変換してコピー
         temp_img = img_array.astype(np.float32)
         
-        # 特殊色のマスクを取得
         special_mask = self.check_simutrans_special_colors(temp_img[..., :3])
         
-        # 特殊色『以外』のピクセルを特定 (背景色も除く)
         is_bg = np.all(temp_img[..., :3] == [231, 255, 255], axis=-1)
         target_mask = (~special_mask) & (~is_bg) & (temp_img[..., 3] > 0)
         
-        # --- 特殊色以外の加工 ---
-        # 1. グレースケール化 (標準的な輝度計算)
         gray = temp_img[target_mask, 0] * 0.299 + \
                temp_img[target_mask, 1] * 0.587 + \
                temp_img[target_mask, 2] * 0.114
         
-        # 2. 暗くする (例: 輝度を30%に)
         temp_img[target_mask, 0] = gray * 0.3
         temp_img[target_mask, 1] = gray * 0.3
         temp_img[target_mask, 2] = gray * 0.3
@@ -720,13 +715,11 @@ class ImageEditor:
 
         self.tool = tool_name
         
-        # すべてのボタンの外見をデフォルトに戻す
         for name, btn in self.tool_btns.items():
             btn.config(relief=tk.RAISED, bg="SystemButtonFace")
         if tool_name in self.tool_btns:
             self.tool_btns[tool_name].config(relief=tk.SUNKEN, bg="#ADD8E6")
         
-        # 貼り付け確定ボタンの表示制御
         if self.tool == "move_paste":
             self.btn_confirm.pack(side=tk.LEFT, padx=5)
         else:
@@ -749,7 +742,6 @@ class ImageEditor:
         for i, rgb in enumerate(self.special_color_list):
             hex_color = "#{:02x}{:02x}{:02x}".format(*rgb)
             
-            # 色見本ボタン
             btn = tk.Button(
                 palette_frame, 
                 bg=hex_color, 
@@ -779,7 +771,6 @@ class ImageEditor:
             self.build_paksize = int(self.build_entry.get())
             p_size = int(self.play_entry.get())
             
-            # play_paksize が build_paksize より大きい場合は制限
             if p_size > self.build_paksize:
                 p_size = self.build_paksize
                 self.play_entry.delete(0, tk.END)
@@ -916,11 +907,12 @@ class ImageEditor:
             return
         if self.tool == "line":
             self.line_start = (ix, iy)
+            self.save_full_undo(self.active_layer) # save for undo
             self.drag_start_pos = (ix, iy)
             return
         if self.tool == "rect":
-            self.line_start = (ix, iy) # 始点を保持
-            self.save_full_undo(self.active_layer) # 描画前にUndo保存
+            self.line_start = (ix, iy) # start point
+            self.save_full_undo(self.active_layer) # save for undo
             return
         if self.tool == "move":
             layer = self.layers[self.active_layer]
@@ -1177,6 +1169,7 @@ class ImageEditor:
             tags="preview"
         )
     def finalize_line(self, x1, y1, x2, y2):
+        # please save current state BEFORE call this function!
         layer_dict = self.layers[self.active_layer]
         layer_img = layer_dict["img"]
         ox = layer_dict.get("off_x", 0)
@@ -1192,8 +1185,7 @@ class ImageEditor:
         signy = int(np.sign(dy))
         startx = min(x1,x2)
         starty = min(y1,y2)
-        
-        self.save_full_undo(self.active_layer)
+
         print(f"draw line from {x1},{y1} to {x2},{y2}, ({dx},{dy})")
 
         if abs(dx)<abs(dy):
@@ -1531,7 +1523,7 @@ class ImageEditor:
             layer["off_y"] = new_y
             self.redraw()
         except ValueError:
-            # 数字以外が入った場合は無視、または警告
+            # no integer value, false
             pass
 
     def update_offset_ui(self):
