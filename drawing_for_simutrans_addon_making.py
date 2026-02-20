@@ -1442,37 +1442,43 @@ class ImageEditor:
             "layer_idx": layer_idx, 
             "img": img_copy
         })
+        self.redo_stack.clear()
     def undo(self):
         if not self.undo_stack:
             return
         stroke = self.undo_stack.pop()
 
-        if isinstance(stroke, dict) and "full_img" in stroke:
+        if isinstance(stroke, dict) and stroke.get("type") == "full":
             l_idx = stroke["layer_idx"]
-            current_back = self.layers[l_idx]["img"].copy()
-            self.layers[l_idx]["img"] = stroke["full_img"]
-            self.redo_stack.append({"layer_idx": l_idx, "full_img": current_back})
-            return
-        if isinstance(stroke, tuple) and stroke[0] == "whole_layers":
+            current_img = self.layers[l_idx]["img"].copy()
+            
+            self.layers[l_idx]["img"] = stroke["img"]
+
+            self.redo_stack.append({
+                "type": "full", 
+                "layer_idx": l_idx, 
+                "img": current_img
+            })
+        elif isinstance(stroke, tuple) and stroke[0] == "whole_layers":
             import copy
             self.redo_stack.append(("whole_layers", copy.deepcopy(self.layers), self.active_layer))
-            
             self.layers = stroke[1]
             self.active_layer = stroke[2]
-        else:
-            if isinstance(stroke, tuple) and stroke[0] == "move_layer":
-                _, src, dst = stroke
-                self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
-                self.redo_stack.append(("move_layer", dst, src))
-                self.active_layer = src
-                self.refresh_layer_panel()
-                self.redraw()
-                return
-            redo = []
+
+
+        elif isinstance(stroke, tuple) and stroke[0] == "move_layer":
+            _, src, dst = stroke
+            self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
+            self.redo_stack.append(("move_layer", dst, src))
+            self.active_layer = src
+
+
+        elif isinstance(stroke, list):
+            redo_list = []
             for l, x, y, before in stroke:
-                redo.append((l, x, y, self.layers[l]["img"][y, x].copy()))
+                redo_list.append((l, x, y, self.layers[l]["img"][y, x].copy()))
                 self.layers[l]["img"][y, x] = before
-            self.redo_stack.append(redo)
+            self.redo_stack.append(redo_list)
 
         self.refresh_layer_panel()
         self.redraw()
@@ -1481,26 +1487,39 @@ class ImageEditor:
         if not self.redo_stack:
             return
         stroke = self.redo_stack.pop()
-        if isinstance(stroke, tuple) and stroke[0] == "whole_layers":
+
+        # 1. 
+        if isinstance(stroke, dict) and stroke.get("type") == "full":
+            l_idx = stroke["layer_idx"]
+            current_img = self.layers[l_idx]["img"].copy()
+            self.layers[l_idx]["img"] = stroke["img"]
+            self.undo_stack.append({
+                "type": "full", 
+                "layer_idx": l_idx, 
+                "img": current_img
+            })
+
+        # 2. whole_layers
+        elif isinstance(stroke, tuple) and stroke[0] == "whole_layers":
             import copy
             self.undo_stack.append(("whole_layers", copy.deepcopy(self.layers), self.active_layer))
-            
             self.layers = stroke[1]
             self.active_layer = stroke[2]
-        else:
-            if isinstance(stroke, tuple) and stroke[0] == "move_layer":
-                _, src, dst = stroke
-                self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
-                self.undo_stack.append(("move_layer", dst, src))
-                self.active_layer = dst
-                self.refresh_layer_panel()
-                self.redraw()
-                return
-            undo = []
+
+        # 3. move_layer
+        elif isinstance(stroke, tuple) and stroke[0] == "move_layer":
+            _, src, dst = stroke
+            self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
+            self.undo_stack.append(("move_layer", dst, src))
+            self.active_layer = dst
+
+        elif isinstance(stroke, list):
+            undo_list = []
             for l, x, y, before in stroke:
-                undo.append((l, x, y, self.layers[l]["img"][y, x].copy()))
+                undo_list.append((l, x, y, self.layers[l]["img"][y, x].copy()))
                 self.layers[l]["img"][y, x] = before
-            self.undo_stack.append(undo)
+            self.undo_stack.append(undo_list)
+
         self.refresh_layer_panel()
         self.redraw()
     def start_offset_loop(self, dx, dy):
