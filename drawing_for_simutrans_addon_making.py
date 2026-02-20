@@ -147,8 +147,20 @@ class ImageEditor:
 
         self.rect_mode = tk.StringVar(value="box") # box, h_para, d_para
         rect_options = [("Box", "box"), ("H-Para", "h_para"), ("D-Para", "d_para")]
+        self.create_rect_icons()
+        self.rect_option_frame = tk.Frame(bar)
         for text, mode in rect_options:
-            tk.Radiobutton(bar, text=text, variable=self.rect_mode, value=mode).pack(side=tk.LEFT)
+            rb = tk.Radiobutton(
+                self.rect_option_frame, 
+                image=self.rect_icons[mode],
+                text=text,
+                compound=tk.LEFT,
+                variable=self.rect_mode, 
+                value=mode,
+                indicatoron=0,
+                padx=5, pady=2
+            )
+            rb.pack(side=tk.LEFT, padx=2)
 
         # Edit
         tk.Button(tab_edit, text="Copy", command=self.copy_selection).pack(side=tk.LEFT)
@@ -353,6 +365,24 @@ class ImageEditor:
             match = np.all(rgb_array == color, axis=-1)
             mask |= match
         return mask
+    def create_rect_icons(self):
+        self.rect_icons = {}
+        modes = ["box", "h_para", "d_para"]
+        
+        for m in modes:
+            img = Image.new("RGBA", (24, 24), (0,0,0,0))
+            draw = Image.new("RGBA", (24, 24), (0,0,0,0))
+            if m == "box":
+                points = [(4,4), (19,4), (19,19), (4,19)]
+            elif m == "h_para":
+                points = [(4,8), (19,4), (19,15), (4,19)]
+            elif m == "d_para":
+                points = [(11,4), (20,11), (11,18), (2,11)]
+            
+            from PIL import ImageDraw
+            d = ImageDraw.Draw(img)
+            d.polygon(points, outline="black", fill="#ddd")
+            self.rect_icons[m] = ImageTk.PhotoImage(img)
     # ================= Image I/O =================
     def open_image(self):
         path = filedialog.askopenfilename(filetypes=[("PNG", "*.png")])
@@ -683,6 +713,10 @@ class ImageEditor:
     def set_tool(self, tool_name):
         if self.tool == "move_paste" and tool_name != "move_paste":
             self.finalize_paste()
+        if tool_name == "rect":
+            self.rect_option_frame.pack(side=tk.LEFT, padx=10)
+        else:
+            self.rect_option_frame.pack_forget()
 
         self.tool = tool_name
         
