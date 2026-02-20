@@ -882,7 +882,7 @@ class ImageEditor:
                 x_max = x1 if y_max==y1 else x2
                 dx = x_max-x_min
                 dy = y_max-y_min
-                dy_slope = np.sign(x_max-x_min) * abs(x_max-x_min)//2
+                dy_slope = int(np.sign(x_max-x_min) * abs(x_max-x_min)//2)
                 return[(x_min, y_min), (x_min+abs(dy)+dy_slope, y_min + (abs(dy)+dy_slope)//2), (x_max,y_max), (x_min-abs(dy)+dy_slope, y_min+(abs(dy)-dy_slope)//2)]
             else:
                 x_min = min(x1,x2)
@@ -891,7 +891,7 @@ class ImageEditor:
                 y_max = y1 if x_max==x1 else y2
                 dx = x_max-x_min
                 dy = y_max-y_min
-                dy_slope = np.sign(x_max-x_min) * abs(x_max-x_min)//2
+                dy_slope = int(np.sign(x_max-x_min) * abs(x_max-x_min)//2)
                 return[(x_min-(dy)+abs(dy_slope), y_min+((dy)-abs(dy_slope))//2), (x_max,y_max), (x_min+(dy)+abs(dy_slope), y_min+((dy)+abs(dy_slope))//2), (x_min,y_min)]
         
         return []
@@ -963,12 +963,7 @@ class ImageEditor:
             return
         if self.tool == "rect":
             self.redraw()
-            pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
-            for i in range(len(pts)):
-                p1 = pts[i]
-                p2 = pts[(i+1)%4]
-                self.canvas.create_line(p1[0]*self.zoom, p1[1]*self.zoom, 
-                                        p2[0]*self.zoom, p2[1]*self.zoom, fill="white", dash=(4,4))
+            self.draw_preview_rect(ix,iy)
             return
         if self.tool == "select":
             if self.selection_rect:
@@ -998,11 +993,9 @@ class ImageEditor:
             return
         if self.tool == "rect" and self.line_start:
             pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
-            print(f"rect: {self.line_start[0]},{self.line_start[1]} to {ix},{iy}")
             for i in range(len(pts)):
                 x1, y1 = pts[i][0],pts[i][1]
                 x2, y2 = pts[(i+1)%4][0],pts[(i+1)%4][1]
-                print(f"{x1},{y1} to {x2},{y2}")
                 x_ref3 = pts[(i+2)%4][0]
                 x_ref4 = pts[(i+3)%4][0]
                 if y1==y2:
@@ -1160,7 +1153,27 @@ class ImageEditor:
             text=info_text,
             fill=hex_color,
             anchor="nw",
-            font=("Consolas", 10, "bold"), # 等幅フォントが見やすいです
+            font=("Consolas", 10, "bold"),
+            tags="preview"
+        )
+    def draw_preview_rect(self, ix, iy):
+        pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+        r, g, b = self.draw_color[:3]
+        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+        for i in range(len(pts)):
+            p1 = pts[i]
+            p2 = pts[(i+1)%4]
+            self.canvas.create_line(p1[0]*self.zoom, p1[1]*self.zoom, 
+                                    p2[0]*self.zoom, p2[1]*self.zoom, fill=hex_color, dash=(4,4))
+        info_text = f"{pts[0]}{pts[1]}{pts[2]}{pts[3]}"
+        x2 = ix * self.zoom
+        y2 = iy * self.zoom
+        self.canvas.create_text(
+            x2 + 15, y2 + 15,
+            text=info_text,
+            fill=hex_color,
+            anchor="nw",
+            font=("Consolas", 10, "bold"),
             tags="preview"
         )
     def finalize_line(self, x1, y1, x2, y2):
