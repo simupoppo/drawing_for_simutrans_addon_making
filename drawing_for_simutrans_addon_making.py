@@ -822,23 +822,43 @@ class ImageEditor:
         elif mode == "h_para":
             dx = x2 - x1
             dy = y2 - y1
-            dy_slope = np.sign(dx)* (abs(dx) // 2)
-            
+            dy_slope = abs(dx) // 2
             if dx*dy>0:
+                x_min = min(x1,x2)
+                x_max = max(x1,x2)
+                y_min = min(y1,y2)
+                y_max = max(y1,y2)
                 if abs(dy_slope) < abs(dy):
-                    return[(x1, y1), (x2, y1 + dy_slope), (x2, y2), (x1, y2 - dy_slope)]
-                return[(x1, y1), (x1 + dy*2, y2), (x2, y2), (x2 - dy*2, y1)]
+                    return[(x_min,y_min), (x_max, y_min + dy_slope), (x_max, y_max), (x_min, y_max - dy_slope)]
+                return[(x_min, y_min), (x_min + abs(dy)*2, y_max), (x_max, y_max), (x_max - abs(dy)*2, y_min)]
             else:
+                x_min = max(x1,x2)
+                x_max = min(x1,x2)
+                y_min = min(y1,y2)
+                y_max = max(y1,y2)
                 if abs(dy_slope) < abs(dy):
-                    return[(x1, y1), (x2, y1 - dy_slope), (x2, y2), (x1, y2 + dy_slope)]
-                return[(x1, y1), (x1 - dy*2, y2), (x2, y2), (x2 + dy*2, y1)]
+                    return[(x_min,y_min), (x_max, y_min + dy_slope), (x_max, y_max), (x_min, y_max - dy_slope)]
+                return[(x_min, y_min), (x_min - abs(dy)*2, y_max), (x_max, y_max), (x_max + abs(dy)*2, y_min)]
 
         elif mode == "d_para":
-            dx = x2 - x1
-            dy = y2 - y1
-            dy_slope = np.sign(dx)* (abs(dx) // 2)
-            return [(x1, y1), (x1+dy+dy_slope, y1+(dy+dy_slope)//2), (x2,y2), (x1-dy+dy_slope, y1+(dy-dy_slope)//2)]
-
+            if abs(y2-y1)*2>=abs(x2-x1):
+                y_min = min(y1,y2)
+                y_max = max(y1,y2)
+                x_min = x1 if y_min==y1 else x2
+                x_max = x1 if y_max==y1 else x2
+                dx = x_max-x_min
+                dy = y_max-y_min
+                dy_slope = np.sign(x_max-x_min) * abs(x_max-x_min)//2
+                return[(x_min, y_min), (x_min+abs(dy)+dy_slope, y_min + (abs(dy)+dy_slope)//2), (x_max,y_max), (x_min-abs(dy)+dy_slope, y_min+(abs(dy)-dy_slope)//2)]
+            else:
+                x_min = min(x1,x2)
+                x_max = max(x1,x2)
+                y_min = y1 if x_min==x1 else y2
+                y_max = y1 if x_max==x1 else y2
+                dx = x_max-x_min
+                dy = y_max-y_min
+                dy_slope = np.sign(x_max-x_min) * abs(x_max-x_min)//2
+                return[(x_min-(dy)+abs(dy_slope), y_min+((dy)-abs(dy_slope))//2), (x_max,y_max), (x_min+(dy)+abs(dy_slope), y_min+((dy)+abs(dy_slope))//2), (x_min,y_min)]
         
         return []
     # ================= Drawing =================
@@ -944,9 +964,13 @@ class ImageEditor:
             return
         if self.tool == "rect" and self.line_start:
             pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+            print(f"rect: {self.line_start[0]},{self.line_start[1]} to {ix},{iy}")
             for i in range(len(pts)):
                 x1, y1 = pts[i][0],pts[i][1]
                 x2, y2 = pts[(i+1)%4][0],pts[(i+1)%4][1]
+                print(f"{x1},{y1} to {x2},{y2}")
+                x_ref3 = pts[(i+2)%4][0]
+                x_ref4 = pts[(i+3)%4][0]
                 if y1==y2:
                     x1, x2 = min(x1,x2)-1, max(x1,x2)
                 elif x1==x2:
@@ -964,17 +988,21 @@ class ImageEditor:
                     elif y1>y2 and x1<x2:
                         y1+=1
                         x1-=1
+                    if self.rect_mode.get() == "h_para" and i==2:
+                        if max(x1,x2,x_ref3,x_ref4)==x1 and x2!=x_ref3:
+                            x1-=1
+                            x2-=1
+                        elif x2!=x_ref3:
+                            x1+=1
+                            x2+=1
                 if self.rect_mode.get() == "d_para":
-                    x_ref3, y_ref3 = pts[(i+2)%4][0],pts[(i+2)%4][1]
-                    x_ref4, y_ref4 = pts[(i+3)%4][0],pts[(i+3)%4][1]
-                    xmax = max(x1,x2,x_ref3,x_ref4)
-                    if xmax == x1 or xmax == x2:
-                        x1+=1
-                        x2+=1
-                    ymax = max(y1,y2,y_ref3,y_ref4)
-                    if ymax == y1 or ymax == y2:
-                        y1-=1
+                    if i==1:
                         y2-=1
+                    elif i>1:
+                        x1-=1
+                        x2-=1
+                        if i==2:
+                            y1-=1
 
 
                 self.finalize_line(x1, y1, x2, y2)
