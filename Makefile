@@ -1,7 +1,7 @@
 TARGET_SCRIPT = drawing_for_simutrans_addon_making.py
 DIST_DIR = dist
 WORK_DIR = work
-PYINSTALLER_OPTS = --onefile --distpath $(DIST_DIR) --workpath $(WORK_DIR)
+PYINSTALLER_OPTS = --onefile --distpath $(DIST_DIR) --workpath $(WORK_DIR) --icon=icon.png
 
 .PHONY: all build clean help
 

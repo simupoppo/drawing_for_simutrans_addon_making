@@ -47,9 +47,10 @@ class ImageEditor:
 
         self.layer_panels = []
         # ---- selection ----
-        self.selection_rect = None  # [x1, y1, x2, y2]
-        self.clipboard = None       # copied data
-        self.selection_id = None    # 
+        self.selection_rect = None       # [x1, y1, x2, y2]
+        self.selection_para_pts = None   # [(x,y)x4] parallelogram selection
+        self.clipboard = None            # copied data
+        self.selection_id = None         #
         
         # ---- Simutrans Settings ----
         self.build_paksize = 128
@@ -140,10 +141,18 @@ class ImageEditor:
         btn_select.pack(side=tk.LEFT)
         self.tool_btns["select"] = btn_select
 
+        btn_para_select = tk.Button(bar, text="ParaSelect", command=lambda: self.set_tool("para_select"))
+        btn_para_select.pack(side=tk.LEFT)
+        self.tool_btns["para_select"] = btn_para_select
+
         # rectangle
         btn_rect = tk.Button(bar, text="Rect", command=lambda: self.set_tool("rect"))
         btn_rect.pack(side=tk.LEFT)
         self.tool_btns["rect"] = btn_rect
+
+        btn_fill_rect = tk.Button(bar, text="FillRect", command=lambda: self.set_tool("fill_rect"))
+        btn_fill_rect.pack(side=tk.LEFT)
+        self.tool_btns["fill_rect"] = btn_fill_rect
 
         self.rect_mode = tk.StringVar(value="box") # box, h_para, d_para
         rect_options = [("Box", "box"), ("H-Para", "h_para"), ("D-Para", "d_para")]
@@ -340,6 +349,7 @@ class ImageEditor:
 
     def clear_selection(self, event=None):
         self.selection_rect = None
+        self.selection_para_pts = None
         self.redraw()
     def create_base_tile(self):
         size = 8
@@ -708,26 +718,32 @@ class ImageEditor:
     def set_tool(self, tool_name):
         if self.tool == "move_paste" and tool_name != "move_paste":
             self.finalize_paste()
-        if tool_name == "rect":
+        if tool_name in ("rect", "fill_rect", "para_select"):
             self.rect_option_frame.pack(side=tk.LEFT, padx=10)
         else:
             self.rect_option_frame.pack_forget()
 
         self.tool = tool_name
-        
+
         for name, btn in self.tool_btns.items():
             btn.config(relief=tk.RAISED, bg="SystemButtonFace")
         if tool_name in self.tool_btns:
             self.tool_btns[tool_name].config(relief=tk.SUNKEN, bg="#ADD8E6")
-        
+
         if self.tool == "move_paste":
             self.btn_confirm.pack(side=tk.LEFT, padx=5)
         else:
             self.btn_confirm.pack_forget()
 
-        if tool_name!="select":
+        if tool_name not in ("select", "para_select"):
             self.clear_selection()
-        
+        elif tool_name == "select":
+            self.selection_para_pts = None
+            self.redraw()
+        elif tool_name == "para_select":
+            self.selection_rect = None
+            self.redraw()
+
         self.redraw()
 
     def choose_color(self):
@@ -886,6 +902,27 @@ class ImageEditor:
                 return[(x_min-(dy)+abs(dy_slope), y_min+((dy)-abs(dy_slope))//2), (x_max,y_max), (x_min+(dy)+abs(dy_slope), y_min+((dy)+abs(dy_slope))//2), (x_min,y_min)]
         
         return []
+    # ================= Polygon Helpers =================
+    def _make_polygon_mask(self, pts, shape):
+        """Return a boolean numpy mask (h, w) where True = inside polygon.
+        pts: list of (x, y) in layer-local coordinates."""
+        from PIL import ImageDraw as PILImageDraw
+        h, w = shape
+        mask_img = Image.new("L", (w, h), 0)
+        PILImageDraw.Draw(mask_img).polygon(pts, fill=255)
+        return np.array(mask_img) > 0
+
+    def fill_polygon_pixels(self, pts):
+        """Fill the interior of a polygon (image coordinates) with draw_color."""
+        layer_dict = self.layers[self.active_layer]
+        layer_img = layer_dict["img"]
+        ox = layer_dict.get("off_x", 0)
+        oy = layer_dict.get("off_y", 0)
+        adj_pts = [(x - ox, y - oy) for x, y in pts]
+        mask = self._make_polygon_mask(adj_pts, layer_img.shape[:2])
+        if mask.any():
+            layer_img[mask] = self.draw_color
+
     # ================= Drawing =================
     def canvas_to_image(self, x, y):
         cx = self.canvas.canvasx(x)
@@ -913,6 +950,14 @@ class ImageEditor:
         if self.tool == "rect":
             self.line_start = (ix, iy) # start point
             self.save_full_undo(self.active_layer) # save for undo
+            return
+        if self.tool == "fill_rect":
+            self.line_start = (ix, iy)
+            self.save_full_undo(self.active_layer)
+            return
+        if self.tool == "para_select":
+            self.line_start = (ix, iy)
+            self.selection_para_pts = None
             return
         if self.tool == "move":
             layer = self.layers[self.active_layer]
@@ -953,9 +998,10 @@ class ImageEditor:
             self.redraw()
             self.draw_preview_line(ix, iy)
             return
-        if self.tool == "rect":
+        if self.tool in ("rect", "fill_rect", "para_select"):
             self.redraw()
-            self.draw_preview_rect(ix,iy)
+            if self.line_start:
+                self.draw_preview_rect(ix, iy)
             return
         if self.tool == "select":
             if self.selection_rect:
@@ -982,6 +1028,23 @@ class ImageEditor:
                 ix, iy = self.snap_coordinate(x1, y1, ix, iy)
             
             self.finalize_line(x1, y1, ix, iy)
+            return
+        if self.tool == "fill_rect" and self.line_start:
+            pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+            self.fill_polygon_pixels(pts)
+            self.line_start = None
+            self.redraw()
+            return
+        if self.tool == "para_select" and self.line_start:
+            pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            if max(xs) != min(xs) and max(ys) != min(ys):
+                self.selection_para_pts = pts
+            else:
+                self.selection_para_pts = None
+            self.line_start = None
+            self.redraw()
             return
         if self.tool == "rect" and self.line_start:
             pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
@@ -1285,7 +1348,29 @@ class ImageEditor:
         except ImportError:
             win32clipboard = None
 
-        if not self.selection_rect or not self.layers:
+        if not self.layers:
+            return
+
+        if self.selection_para_pts:
+            pts = self.selection_para_pts
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            bx1, bx2 = min(xs), max(xs) + 1
+            by1, by2 = min(ys), max(ys) + 1
+            layer_dict = self.layers[self.active_layer]
+            img = layer_dict["img"]
+            ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
+            lx1, ly1 = max(0, bx1 - ox), max(0, by1 - oy)
+            lx2, ly2 = min(img.shape[1], bx2 - ox), min(img.shape[0], by2 - oy)
+            if lx2 > lx1 and ly2 > ly1:
+                clip_np = img[ly1:ly2, lx1:lx2].copy()
+                adj_pts = [(x - ox - lx1, y - oy - ly1) for x, y in pts]
+                mask = self._make_polygon_mask(adj_pts, clip_np.shape[:2])
+                clip_np[~mask] = [0, 0, 0, 0]
+                self.clipboard = clip_np
+            return
+
+        if not self.selection_rect:
             return
 
         x1, y1, x2, y2 = self.selection_rect
@@ -1381,13 +1466,32 @@ class ImageEditor:
             self.undo_stack.append(patch_undo)
 
             sx2, sy2 = sx1 + (x2 - x1), sy1 + (y2 - y1)
-            target_img[y1:y2, x1:x2] = self.floating_image[sy1:sy2, sx1:sx2]
+            patch = self.floating_image[sy1:sy2, sx1:sx2].astype(np.float32)
+            src_alpha = patch[:, :, 3:4] / 255.0
+            dst = target_img[y1:y2, x1:x2].astype(np.float32)
+            blended = dst * (1 - src_alpha) + patch * src_alpha
+            target_img[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
 
         self.floating_image = None
         self.set_tool("pen")
         self.redraw()
     def cut_selection(self):
-        if not self.layers or self.selection_rect is None:
+        if not self.layers:
+            return
+
+        if self.selection_para_pts:
+            self.copy_selection()
+            layer_dict = self.layers[self.active_layer]
+            img = layer_dict["img"]
+            ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
+            adj_pts = [(x - ox, y - oy) for x, y in self.selection_para_pts]
+            mask = self._make_polygon_mask(adj_pts, img.shape[:2])
+            self.save_full_undo(self.active_layer)
+            img[mask] = [0, 0, 0, 0]
+            self.redraw()
+            return
+
+        if self.selection_rect is None:
             return
 
         self.copy_selection()
@@ -1413,23 +1517,37 @@ class ImageEditor:
         self.redraw()
 
     def clear_outside_selection(self):
-        if not self.layers or self.selection_rect is None:
+        if not self.layers:
+            return
+
+        if self.selection_para_pts:
+            self.save_full_undo(self.active_layer)
+            layer_dict = self.layers[self.active_layer]
+            img = layer_dict["img"]
+            ox, oy = layer_dict.get("off_x", 0), layer_dict.get("off_y", 0)
+            adj_pts = [(x - ox, y - oy) for x, y in self.selection_para_pts]
+            mask = self._make_polygon_mask(adj_pts, img.shape[:2])
+            img[~mask] = [0, 0, 0, 0]
+            self.redraw()
+            return
+
+        if self.selection_rect is None:
             return
 
         self.save_full_undo(self.active_layer)
         layer_img = self.layers[self.active_layer]["img"]
-        
+
         x1, y1, x2, y2 = self.selection_rect
         xmin, xmax = sorted([x1, x2])
         ymin, ymax = sorted([y1, y2])
 
         new_img = np.zeros_like(layer_img)
-        
+
         xmin, xmax = max(0, xmin), min(self.width, xmax + 1)
         ymin, ymax = max(0, ymin), min(self.height, ymax + 1)
-        
+
         new_img[ymin:ymax, xmin:xmax] = layer_img[ymin:ymax, xmin:xmax]
-        
+
         self.layers[self.active_layer]["img"] = new_img
         self.redraw()
         
@@ -1731,14 +1849,21 @@ class ImageEditor:
         self.canvas.delete("selection_ui")
         if self.tool == "select" and self.selection_rect:
             x1, y1, x2, y2 = self.selection_rect
-            # pos considered zoom ratio
             zx1, zy1 = x1 * self.zoom, y1 * self.zoom
             zx2, zy2 = x2 * self.zoom, y2 * self.zoom
-            
-            self.canvas.create_rectangle(zx1, zy1, zx2, zy2, 
+            self.canvas.create_rectangle(zx1, zy1, zx2, zy2,
                                          outline="white", dash=(4, 4), tags="selection_ui")
-            self.canvas.create_rectangle(zx1, zy1, zx2, zy2, 
+            self.canvas.create_rectangle(zx1, zy1, zx2, zy2,
                                          outline="black", dash=(4, 4), dashoffset=4, tags="selection_ui")
+        if self.tool == "para_select" and self.selection_para_pts:
+            pts_z = [(p[0]*self.zoom, p[1]*self.zoom) for p in self.selection_para_pts]
+            n = len(pts_z)
+            for i in range(n):
+                p1, p2 = pts_z[i], pts_z[(i+1) % n]
+                self.canvas.create_line(p1[0], p1[1], p2[0], p2[1],
+                                        fill="white", dash=(4, 4), tags="selection_ui")
+                self.canvas.create_line(p1[0], p1[1], p2[0], p2[1],
+                                        fill="black", dash=(4, 4), dashoffset=4, tags="selection_ui")
 
         # ---- Simutrans line ----
         self.canvas.delete("fixed_guide") # remove old guide
