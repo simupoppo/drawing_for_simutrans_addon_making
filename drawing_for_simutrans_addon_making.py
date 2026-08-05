@@ -74,6 +74,15 @@ class ImageEditor:
         self.clipboard = None            # copied data
         self.selection_id = None         #
         
+        # ---- 3D Prism tool ----
+        self.prism_height = 16
+        # Top face reuses the main draw_color (like every other tool); only
+        # the two shading walls get their own pickable colors.
+        self.prism_colors = {
+            "left": np.array([170, 170, 170, 255], dtype=np.uint8),
+            "right": np.array([110, 110, 110, 255], dtype=np.uint8),
+        }
+
         # ---- Simutrans Settings ----
         self.build_paksize = 128
         self.play_paksize = 128
@@ -178,22 +187,42 @@ class ImageEditor:
         btn_fill_rect.pack(side=tk.LEFT)
         self.tool_btns["fill_rect"] = btn_fill_rect
 
+        btn_prism = tk.Button(bar, text="Prism", command=lambda: self.set_tool("prism"))
+        btn_prism.pack(side=tk.LEFT)
+        self.tool_btns["prism"] = btn_prism
+
         self.rect_mode = tk.StringVar(value="box") # box, h_para, d_para
         rect_options = [("Box", "box"), ("H-Para", "h_para"), ("D-Para", "d_para")]
         self.create_rect_icons()
         self.rect_option_frame = tk.Frame(bar)
         for text, mode in rect_options:
             rb = tk.Radiobutton(
-                self.rect_option_frame, 
+                self.rect_option_frame,
                 image=self.rect_icons[mode],
                 text=text,
                 compound=tk.LEFT,
-                variable=self.rect_mode, 
+                variable=self.rect_mode,
                 value=mode,
                 indicatoron=0,
                 padx=5, pady=2
             )
             rb.pack(side=tk.LEFT, padx=2)
+
+        # ---- Prism (3D box) options: base = d_para drag, plus height + 3 face colors ----
+        self.prism_option_frame = tk.Frame(bar)
+        tk.Label(self.prism_option_frame, text="Height:").pack(side=tk.LEFT)
+        self.prism_height_entry = tk.Entry(self.prism_option_frame, width=5)
+        self.prism_height_entry.insert(0, str(self.prism_height))
+        self.prism_height_entry.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.prism_color_previews = {}
+        for label, key in [("Left", "left"), ("Right", "right")]:
+            tk.Label(self.prism_option_frame, text=label + ":").pack(side=tk.LEFT)
+            preview = tk.Canvas(self.prism_option_frame, width=20, height=20, bd=1, relief="sunken")
+            preview.pack(side=tk.LEFT, padx=(0, 6))
+            preview.bind("<Button-1>", lambda e, k=key: self.choose_prism_color(k))
+            self.prism_color_previews[key] = preview
+        self.update_prism_color_previews()
 
         # Edit
         tk.Button(tab_edit, text="Copy", command=self.copy_selection).pack(side=tk.LEFT)
@@ -877,6 +906,11 @@ class ImageEditor:
         else:
             self.rect_option_frame.pack_forget()
 
+        if tool_name == "prism":
+            self.prism_option_frame.pack(side=tk.LEFT, padx=10)
+        else:
+            self.prism_option_frame.pack_forget()
+
         self.tool = tool_name
 
         for name, btn in self.tool_btns.items():
@@ -905,6 +939,27 @@ class ImageEditor:
         if c[0]:
             self.draw_color[:3] = np.array(c[0], dtype=np.uint8)
             self.update_color_preview()
+
+    def choose_prism_color(self, key):
+        c = colorchooser.askcolor()
+        if c[0]:
+            self.prism_colors[key][:3] = np.array(c[0], dtype=np.uint8)
+            self.update_prism_color_previews()
+
+    def update_prism_color_previews(self):
+        for key, preview in self.prism_color_previews.items():
+            r, g, b = self.prism_colors[key][:3]
+            preview.delete("all")
+            preview.create_rectangle(0, 0, 20, 20, fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
+
+    def get_prism_height(self):
+        try:
+            h = int(self.prism_height_entry.get())
+        except ValueError:
+            h = self.prism_height
+        self.prism_height = max(0, h)
+        return self.prism_height
+
     def create_palette_ui(self, parent_frame):
         palette_frame = tk.LabelFrame(parent_frame, text="Simutrans Special Colors")
         palette_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -1036,45 +1091,184 @@ class ImageEditor:
                 return[(x_min, y_min), (x_min - abs(dy)*2, y_max), (x_max, y_max), (x_max + abs(dy)*2, y_min)]
 
         elif mode == "d_para":
-            if abs(y2-y1)*2>=abs(x2-x1):
-                y_min = min(y1,y2)
-                y_max = max(y1,y2)
-                x_min = x1 if y_min==y1 else x2
-                x_max = x1 if y_max==y1 else x2
-                dy = y_max-y_min
-                dy_slope = int(np.sign(x_max-x_min) * abs(x_max-x_min)//2)
-                p_a = (x_min, y_min)
-                p_b = (x_max, y_max)
-                # first offset corner: single clean division, exact 2:1 edge
-                p_c1 = (x_min+abs(dy)+dy_slope, y_min + (abs(dy)+dy_slope)//2)
-                # opposite corner: derived from the parallelogram identity
-                # (diagonals bisect each other) instead of its own separately
-                # rounded formula, so this edge is exactly parallel to p_a-p_c1
-                # rather than off by a pixel when (abs(dy)+dy_slope) and
-                # (abs(dy)-dy_slope) have different parity.
-                p_c2 = (p_a[0]+p_b[0]-p_c1[0], p_a[1]+p_b[1]-p_c1[1])
-                return[p_a, p_c1, p_b, p_c2]
-            else:
-                x_min = min(x1,x2)
-                x_max = max(x1,x2)
-                y_min = y1 if x_min==x1 else y2
-                y_max = y1 if x_max==x1 else y2
-                dy = y_max-y_min
-                dy_slope = int(np.sign(x_max-x_min) * abs(x_max-x_min)//2)
-                p_a = (x_min, y_min)
-                p_b = (x_max, y_max)
-                p_c0 = (x_min-(dy)+abs(dy_slope), y_min+((dy)-abs(dy_slope))//2)
-                p_c2 = (p_a[0]+p_b[0]-p_c0[0], p_a[1]+p_b[1]-p_c0[1])
-                return[p_c0, p_b, p_c2, p_a]
-        
+            # A clean dimetric parallelogram has every side running along
+            # one of two fixed, x-dominant 2:1 directions: D1=(2,1) (down-
+            # right) and D2=(2,-1) (up-right) - both exact 2:1 ratios, both
+            # stepping x every dot (matching h_para's own convention), so
+            # every edge rasterizes as a perfectly even AABBCCDD staircase
+            # with no mid-line singleton. (A first attempt used a properly
+            # perpendicular pair, D2=(-1,2), which is y-dominant - that
+            # flips which axis steps every dot vs which one pairs, so the
+            # "cap" edges came out transposed from every other edge in the
+            # app. Two x-dominant directions avoid that entirely.)
+            # Snap the raw drag to the nearest point reachable as
+            # x1,y1 + n*D1 + m*D2 (integer n,m): p0 stays exactly at the
+            # drag start and all 4 edges come out clean.
+            dx = x2 - x1
+            dy = y2 - y1
+            n = round((dx + 2*dy) / 4)
+            m = round((dx - 2*dy) / 4)
+            p0 = (x1, y1)
+            p1 = (p0[0] + 2*n, p0[1] + n)
+            p2 = (p1[0] + 2*m, p1[1] - m)
+            p3 = (p0[0] + 2*m, p0[1] - m)
+            return [p0, p1, p2, p3]
+
         return []
 
+    def _padded_diagonal_edge(self, x1, y1, x2, y2):
+        """Nudge one endpoint of a purely-diagonal 2-point segment by ±1 so
+        it rasterizes flush against another edge meeting it at that
+        endpoint - the same rule finalize_line's stepping needs in order
+        for two edges that nominally share a corner to actually connect
+        with no 1px gap."""
+        if y1 < y2 and x1 < x2:
+            y2 += 1
+            x2 += 1
+        elif y1 > y2 and x1 > x2:
+            y1 += 1
+            x1 += 1
+        elif y1 < y2 and x1 > x2:
+            y2 += 1
+            x2 -= 1
+        elif y1 > y2 and x1 < x2:
+            y1 += 1
+            x1 -= 1
+        return x1, y1, x2, y2
+
+    def _d_para_arm_segments(self, anchor_x, anchor_y, dxp, dyp, count):
+        """Build one "arm" of a d_para shape as a list of trivial 1px-tall
+        horizontal (x1,y,x2,y) segments, `count` of them, starting exactly
+        at (anchor_x,anchor_y) and stepping by (dxp,dyp) each time - one of
+        the two clean x-dominant 2:1 directions, (2,±1) or (-2,±1).
+
+        finalize_line/_rasterize_edge_points can't be reused directly to
+        rasterize a whole arm in one shot: their sign-dependent stepping
+        picks whichever endpoint has the larger x as pixel 0, which for a
+        (2,-1)-family direction is the FAR end, not this anchor - so a
+        naive 2-point line from anchor to anchor+count*direction lands
+        different pixels than intended. Emitting one tiny 2px segment per
+        step sidesteps that. Each segment uses the same "min-1, max"
+        padding box mode's own horizontal edges use, since a bare 1px-wide
+        segment (e.g. x to x+1) truncates to a single pixel otherwise."""
+        segments = []
+        x, y = anchor_x, anchor_y
+        for _ in range(count):
+            other_x = x + (1 if dxp > 0 else -1)
+            lo, hi = min(x, other_x), max(x, other_x)
+            segments.append((lo - 1, y, hi, y))
+            x += dxp
+            y += dyp
+        return segments
+
+    def get_d_para_arms(self, x1, y1, x2, y2):
+        """Build the 4 "arms" of a d_para shape - the basement diamond
+        used by the D-Para/Rect/FillRect tools and the Prism tool's
+        footprint. Each arm is a straight run along one of two fixed,
+        x-dominant 2:1 directions, D1=(2,1) (down-right) and D2=(2,-1)
+        (up-right); every arm's own pixels always pair up 2-per-row with
+        no mid-line singleton (unlike a plain corner-to-corner line, which
+        can drift off a clean 2:1 ratio - see get_rect_points), and the 4
+        arms together tile every row with exactly 4px (2 from each side),
+        even at the shape's own corners - not just 1-2px, which is what a
+        naive shared corner pixel gives.
+
+        Returns (arms, corners): arms = {"nw": [...], "ne": [...],
+        "se": [...], "sw": [...]} each a list of (x1,y,x2,y) segments (see
+        _d_para_arm_segments), and corners = (p0, p1, p2, p3) the four true
+        corner coordinates in drag order (p0 is the drag start).
+
+        Verified connected (no gaps) for all 4 sign combinations of
+        n/m, including pure vertical (north-south/south-north) drags.
+        Exact 4px-per-row corners are confirmed for n>=0; some n<0
+        drags can still show a 1px-wider row at one corner (cosmetic
+        overlap, not a gap)."""
+        dx = x2 - x1
+        dy = y2 - y1
+        if(  np.abs(dx)<2*np.abs(dy)  ):
+            old_y1 = y1
+            old_y2 = y2
+            old_x1 = x1
+            old_x2 = x2
+            y2 = old_y1 + (dy + dx//2)//2
+            y1 = old_y1 + (dy - dx//2)//2  
+            x2 = old_x1 + (dy + dx//2)
+            x1 = old_x1 - (dy - dx//2)
+            dx = x2-x1
+            dy = y2-y1
+
+        D1 = (2, 1)
+        D2 = (2, -1)
+        n = round((dx + 2 * dy) / 4)
+        m = round((dx - 2 * dy) / 4)
+        p0 = (x1, y1)
+        p1 = (p0[0] + 2 * n, p0[1] + n)
+        p2 = (p1[0] + 2 * m, p1[1] - m)
+        p3 = (p0[0] + 2 * m, p0[1] - m)
+
+        nw_dir = D1 if n >= 0 else (-D1[0], -D1[1])
+        ne_dir = D2 if m >= 0 else (-D2[0], -D2[1])
+        se_dir = (-nw_dir[0], -nw_dir[1])
+        sw_dir = ne_dir
+
+        ne_anchor = (p1[0], p1[1] - nw_dir[1])
+        if n >= 0:
+            se_y = p2[1] - (ne_dir[1] if m < 0 else 0)
+        else:
+            # n<0 (e.g. a north-south/south-north drag) needs the shared
+            # row to follow ne's actual last row, not p2's own row - ne's
+            # anchor is already offset by nw_dir, so its true reach past
+            # p1 drifts by sign(m)-sign(n) rows from p2 whenever n<0;
+            # the n>=0 branch above never needed this because it always
+            # landed back on p2's own row exactly.
+            se_y = p2[1] + (1 if m >= 0 else -1) - (1 if n >= 0 else -1)
+        se_anchor = (p2[0] - ne_dir[0] // 2, se_y)
+        sw_anchor = (p0[0] + sw_dir[0], p0[1] + sw_dir[1])
+
+        se_count = abs(n)
+        se_segments = self._d_para_arm_segments(se_anchor[0], se_anchor[1], se_dir[0], se_dir[1], se_count)
+        # se's own reach can land several rows away from p2 (see se_y above),
+        # which for small/mixed-sign drags can leave p2 itself - the drag's
+        # own second click point - undrawn, or drawn but disconnected from
+        # the rest of the outline. Bridge from p2 to se's actual anchor
+        # whenever se's row range doesn't already include p2's row, so the
+        # endpoint is always both drawn and connected.
+        se_last_y = se_anchor[1] + (se_count - 1) * se_dir[1] if se_count > 0 else se_anchor[1]
+        lo_y, hi_y = min(se_anchor[1], se_last_y), max(se_anchor[1], se_last_y)
+        if not (lo_y <= p2[1] <= hi_y):
+            def _sign(v):
+                return (v > 0) - (v < 0)
+            bx = p2[0] - (_sign(se_anchor[0] - p2[0]) or 0)
+            by = p2[1] - (_sign(se_anchor[1] - p2[1]) or 0)
+            se_segments = se_segments + [(bx, by, se_anchor[0], se_anchor[1])]
+
+        # -1 avoids sw overlapping se at their shared corner (p3) for most
+        # m, but for |m|<=1 that reduction would zero sw out entirely -
+        # dropping the whole wall face for a case that still has real (if
+        # small) width - so keep it un-reduced there.
+        sw_count = abs(m) if abs(m) <= 1 else abs(m) - 1
+        sw_segments = self._d_para_arm_segments(sw_anchor[0], sw_anchor[1], sw_dir[0], sw_dir[1], sw_count)
+
+        arms = {
+            "nw": self._d_para_arm_segments(p0[0], p0[1], nw_dir[0], nw_dir[1], abs(n)),
+            "ne": self._d_para_arm_segments(ne_anchor[0], ne_anchor[1], ne_dir[0], ne_dir[1], abs(m)),
+            "se": se_segments,
+            "sw": sw_segments,
+        }
+        return arms, (p0, p1, p2, p3)
+
     def get_fill_rect_edges(self, x1s, y1s, x2s, y2s, mode):
-        """Return the 4 border segments [(x1,y1,x2,y2), ...] that the "rect"
+        """Return the border segments [(x1,y1,x2,y2), ...] that the "rect"
         outline tool actually draws (via finalize_line) for this drag/mode.
         Shared by the outline tool and the fill tool so a filled shape's
         border always matches the unfilled outline pixel-for-pixel."""
+        if mode == "d_para":
+            arms, _ = self.get_d_para_arms(x1s, y1s, x2s, y2s)
+            return arms["nw"] + arms["ne"] + arms["se"] + arms["sw"]
+
         pts = self.get_rect_points(x1s, y1s, x2s, y2s, mode)
+        print(f"get_rect_points({x1s},{y1s},{x2s},{y2s},{mode}) corners: {pts}")
+
         edges = []
         for i in range(len(pts)):
             x1, y1 = pts[i][0], pts[i][1]
@@ -1086,18 +1280,7 @@ class ImageEditor:
             elif x1 == x2:
                 y1, y2 = min(y1, y2) - 1, max(y1, y2)
             else:
-                if y1 < y2 and x1 < x2:
-                    y2 += 1
-                    x2 += 1
-                elif y1 > y2 and x1 > x2:
-                    y1 += 1
-                    x1 += 1
-                elif y1 < y2 and x1 > x2:
-                    y2 += 1
-                    x2 -= 1
-                elif y1 > y2 and x1 < x2:
-                    y1 += 1
-                    x1 -= 1
+                x1, y1, x2, y2 = self._padded_diagonal_edge(x1, y1, x2, y2)
                 if mode == "h_para" and i == 2:
                     if max(x1, x2, x_ref3, x_ref4) == x1 and x2 != x_ref3:
                         x1 -= 1
@@ -1105,16 +1288,99 @@ class ImageEditor:
                     elif x2 != x_ref3:
                         x1 += 1
                         x2 += 1
-            if mode == "d_para":
-                if i == 1:
-                    y2 -= 1
-                elif i > 1:
-                    x1 -= 1
-                    x2 -= 1
-                    if i == 2:
-                        y1 -= 1
             edges.append((x1, y1, x2, y2))
         return edges
+
+    def get_prism_faces(self, x1, y1, x2, y2, height):
+        """Build the 3 visible faces of a rectangular prism. (x1,y1)-(x2,y2)
+        is the same drag as the D-Para tool, but here it defines the
+        BASEMENT tile - the box's footprint on the ground - not the top
+        surface. The box rises straight up by `height` pixels: the top
+        face is the basement diamond shifted up by height (still a clean
+        D-Para shape), but each wall is its own H-Para parallelogram - the
+        wall's own two vertical edges (the corner it shares with its
+        neighbor, and the corner it shares with the top face) plus two
+        straight sloped edges connecting them at the same angle as the
+        basement's own edge - not a staircase copy of the basement's own
+        arm. The FRONT corner (largest y - closest to the viewer) is
+        whichever of p0..p3 sits lowest, not always the same index once
+        get_d_para_arms's own horizontal-recalculation can reassign which
+        corner is north/south/east/west - so it's found by actual position
+        each time, not hardcoded. Its two neighbors in the p0-p1-p2-p3
+        cycle are the west/east corners; each visible wall spans front to
+        one neighbor, with that neighbor's shifted-up copy as its highest
+        (its own "north") point."""
+        if x1 == x2 and y1 == y2:
+            return None
+
+        # Top face: draw it exactly like the D-Para tool itself would, at
+        # the shifted-up position - not derived/translated from the
+        # basement's arms.
+        top_edges = self.get_fill_rect_edges(x1, y1 - height, x2, y2 - height, "d_para")
+
+        arms, corners = self.get_d_para_arms(x1, y1, x2, y2)
+        front_idx = max(range(4), key=lambda i: corners[i][1])
+
+        # p0..p3 are the MATH corners the arms were built to approach, but
+        # each arm's own "one-short" truncation (see get_d_para_arms) means
+        # the actual drawn pixels can land a step away from that exact
+        # point - anchoring a wall at the math corner instead of the real
+        # pixel is exactly what put the wall one dot off from the roof.
+        # Snap to the real pixel closest to each math corner instead.
+        touching_arms = {0: ("sw", "nw"), 1: ("nw", "ne"), 2: ("ne", "se"), 3: ("se", "sw")}
+
+        def actual_corner(idx):
+            target = corners[idx]
+            pts = []
+            for arm_name in touching_arms[idx]:
+                for a, b, c, d in arms[arm_name]:
+                    pts.extend(self._rasterize_edge_points(a, b, c, d))
+            if not pts:
+                return target
+            return min(pts, key=lambda p: abs(p[0] - target[0]) + abs(p[1] - target[1]))
+
+        west_idx = (front_idx - 1) % 4
+        east_idx = (front_idx + 1) % 4
+        front = actual_corner(front_idx)
+        front_l = (front[0]-1,front[1])
+        neighbor_a = actual_corner(west_idx)
+        neighbor_b = actual_corner(east_idx)
+        west, east = (neighbor_a, neighbor_b) if neighbor_a[0] <= neighbor_b[0] else (neighbor_b, neighbor_a)
+
+        faces = {"top": top_edges}
+        if height > 0:
+            faces["left"] = self._wall_quad_edges(front_l, west, height)
+            faces["right"] = self._wall_quad_edges(front, east, height)
+        return faces
+
+    def _wall_quad_edges(self, front, neighbor, height):
+        """Build one prism wall's 4 edges directly - front and neighbor are
+        real (already-rendered) pixels on the basement's own outline, so
+        the two vertical edges (front to its shifted-up copy, neighbor to
+        its shifted-up copy) are each exactly `height` long by
+        construction, and the two sloped edges reuse the basement's own
+        front-neighbor direction. Delegating this to get_rect_points's
+        generic H-Para formula instead (as an earlier version did) re-
+        derives the slope from the combined width/height of front and the
+        shifted neighbor, whose own integer rounding could make one
+        vertical edge a pixel taller than the other - building the 4
+        points directly avoids that entirely."""
+        front_top = (front[0], front[1] - height)
+        neighbor_top = (neighbor[0], neighbor[1] - height)
+        pts = [front, front_top, neighbor_top, neighbor]
+        edges = []
+        for i in range(4):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % 4]
+            if y1 == y2:
+                x1, x2 = min(x1, x2) - 1, max(x1, x2)
+            elif x1 == x2:
+                y1, y2 = min(y1, y2) - 1, max(y1, y2)
+            else:
+                x1, y1, x2, y2 = self._padded_diagonal_edge(x1, y1, x2, y2)
+            edges.append((x1, y1, x2, y2))
+        return edges
+
     # ================= Polygon Helpers =================
     def _rasterize_edge_points(self, x1, y1, x2, y2):
         """Return the list of pixel coordinates for the segment (x1,y1)-(x2,y2)
@@ -1180,11 +1446,13 @@ class ImageEditor:
         if mask.any():
             layer_img[mask] = self.draw_color
 
-    def fill_rect_edges(self, edges):
+    def fill_rect_edges(self, edges, color=None):
         """Fill the area bounded by explicit border segments (image coords),
-        e.g. from get_fill_rect_edges, with draw_color. Rasterizes each
-        segment with the same rule finalize_line uses, so the filled area's
-        border is identical to the unfilled outline's border."""
+        e.g. from get_fill_rect_edges, with `color` (defaults to draw_color).
+        Rasterizes each segment with the same rule finalize_line uses, so
+        the filled area's border is identical to the unfilled outline's
+        border."""
+        fill_color = self.draw_color if color is None else color
         layer_dict = self.layers[self.active_layer]
         layer_img = layer_dict["img"]
         ox = layer_dict.get("off_x", 0)
@@ -1192,8 +1460,10 @@ class ImageEditor:
         h, w = layer_img.shape[:2]
 
         mask = np.zeros((h, w), dtype=bool)
-        for x1, y1, x2, y2 in edges:
-            for x, y in self._rasterize_edge_points(x1 - ox, y1 - oy, x2 - ox, y2 - oy):
+        for edge_idx, (x1, y1, x2, y2) in enumerate(edges):
+            dots = self._rasterize_edge_points(x1 - ox, y1 - oy, x2 - ox, y2 - oy)
+            print(f"fill edge{edge_idx}: {x1},{y1} to {x2},{y2} - {len(dots)} dots: {dots}")
+            for x, y in dots:
                 if 0 <= x < w and 0 <= y < h:
                     mask[y, x] = True
 
@@ -1203,7 +1473,7 @@ class ImageEditor:
                 mask[y, xs.min():xs.max() + 1] = True
 
         if mask.any():
-            layer_img[mask] = self.draw_color
+            layer_img[mask] = fill_color
 
     # ================= Drawing =================
     def canvas_to_image(self, x, y):
@@ -1234,6 +1504,10 @@ class ImageEditor:
             self.save_full_undo(self.active_layer) # save for undo
             return
         if self.tool == "fill_rect":
+            self.line_start = (ix, iy)
+            self.save_full_undo(self.active_layer)
+            return
+        if self.tool == "prism":
             self.line_start = (ix, iy)
             self.save_full_undo(self.active_layer)
             return
@@ -1285,6 +1559,11 @@ class ImageEditor:
             if self.line_start:
                 self.draw_preview_rect(ix, iy)
             return
+        if self.tool == "prism":
+            self.redraw()
+            if self.line_start:
+                self.draw_preview_prism(ix, iy)
+            return
         if self.tool == "select":
             if self.selection_rect:
                 self.selection_rect[2] = ix
@@ -1314,6 +1593,19 @@ class ImageEditor:
         if self.tool == "fill_rect" and self.line_start:
             edges = self.get_fill_rect_edges(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
             self.fill_rect_edges(edges)
+            self.line_start = None
+            self.redraw()
+            return
+        if self.tool == "prism" and self.line_start:
+            height = self.get_prism_height()
+            faces = self.get_prism_faces(self.line_start[0], self.line_start[1], ix, iy, height)
+            if faces:
+                # walls first, top face last so it "caps" the shared seam
+                if "left" in faces:
+                    self.fill_rect_edges(faces["left"], self.prism_colors["left"])
+                if "right" in faces:
+                    self.fill_rect_edges(faces["right"], self.prism_colors["right"])
+                self.fill_rect_edges(faces["top"], self.draw_color)
             self.line_start = None
             self.redraw()
             return
@@ -1455,12 +1747,14 @@ class ImageEditor:
             font=("Consolas", 10, "bold"),
             tags="preview"
         )
-    def draw_preview_rect(self, ix, iy):
-        pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
-        edges = self.get_fill_rect_edges(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
-        r, g, b = self.draw_color[:3]
-        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+    def _color_to_hex(self, color):
+        r, g, b = color[:3]
+        return f"#{r:02x}{g:02x}{b:02x}"
 
+    def _draw_dashed_polygon_edges(self, edges, hex_color):
+        """Draw a closed dashed outline for `edges` (as from
+        get_fill_rect_edges / _extrude_wall) that lands exactly on the
+        pixels that will actually be drawn/filled."""
         # edges' own (x1,y1)/(x2,y2) include a padding nudge that lets
         # finalize_line's pixel loop reach the true corner, but that nudged
         # coordinate is never itself a drawn pixel. Use the actual first/last
@@ -1474,7 +1768,7 @@ class ImageEditor:
         # on screen. Anchoring every point at its pixel's near (top-left)
         # corner makes the north/west sides line up, but leaves the
         # south/east sides looking a full pixel short of the actually
-        # rendered extent. So pixels on the shape's own right/bottom edge
+        # rendered extent. So pixels on this shape's own right/bottom edge
         # need to be anchored at their far corner instead.
         all_pts = [p for pair in endpoints for p in pair]
         x_max = max(p[0] for p in all_pts)
@@ -1489,6 +1783,12 @@ class ImageEditor:
             lx, ly = outer_corner(l)
             self.canvas.create_line(fx*self.zoom, fy*self.zoom,
                                     lx*self.zoom, ly*self.zoom, fill=hex_color, dash=(4,4))
+
+    def draw_preview_rect(self, ix, iy):
+        pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+        edges = self.get_fill_rect_edges(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+        hex_color = self._color_to_hex(self.draw_color)
+        self._draw_dashed_polygon_edges(edges, hex_color)
         info_text = f"{pts[0]}{pts[1]}{pts[2]}{pts[3]}"
         x2 = ix * self.zoom
         y2 = iy * self.zoom
@@ -1500,6 +1800,29 @@ class ImageEditor:
             font=("Consolas", 10, "bold"),
             tags="preview"
         )
+
+    def draw_preview_prism(self, ix, iy):
+        height = self.get_prism_height()
+        faces = self.get_prism_faces(self.line_start[0], self.line_start[1], ix, iy, height)
+        if not faces:
+            return
+        face_colors = {"left": self.prism_colors["left"], "right": self.prism_colors["right"], "top": self.draw_color}
+        for key in ("left", "right", "top"):
+            if key in faces:
+                self._draw_dashed_polygon_edges(faces[key], self._color_to_hex(face_colors[key]))
+
+        info_text = f"h={height}"
+        x2 = ix * self.zoom
+        y2 = iy * self.zoom
+        self.canvas.create_text(
+            x2 + 15, y2 + 15,
+            text=info_text,
+            fill=self._color_to_hex(self.draw_color),
+            anchor="nw",
+            font=("Consolas", 10, "bold"),
+            tags="preview"
+        )
+
     def finalize_line(self, x1, y1, x2, y2):
         # please save current state BEFORE call this function!
         layer_dict = self.layers[self.active_layer]
@@ -1508,31 +1831,22 @@ class ImageEditor:
         oy = layer_dict.get("off_y", 0)
         color = self.draw_color
 
-        dx = x2-x1
-        dy = y2-y1
-        if dx*dx+dy*dy==0:
+        if x1 == x2 and y1 == y2:
             # no line
             return
-        signx = int(np.sign(dx))
-        signy = int(np.sign(dy))
-        startx = min(x1,x2)
-        starty = min(y1,y2)
 
-        print(f"draw line from {x1},{y1} to {x2},{y2}, ({dx},{dy})")
+        # _rasterize_edge_points implements the exact same stepping rule
+        # this function used to inline, so reuse it here instead of
+        # duplicating the algorithm - this also lets us print every dot
+        # actually drawn, not just the endpoints, for debugging.
+        dots = self._rasterize_edge_points(x1, y1, x2, y2)
+        print(f"draw line from {x1},{y1} to {x2},{y2}, ({x2-x1},{y2-y1}) - {len(dots)} dots: {dots}")
 
         lh, lw = layer_img.shape[:2]
-        if abs(dx)<abs(dy):
-            for i in range(abs(dy)):
-                temp_x = startx+((i)*abs(dx)//abs(dy))-ox
-                temp_y = (starty + i if (signx*signy>0) else max(y1,y2) - i)-oy
-                if 0 <= temp_x < lw and 0 <= temp_y < lh:
-                    layer_img[temp_y,temp_x]=color
-        else:
-            for i in range(abs(dx)):
-                temp_x = (startx + i if (signx*signy>0) else max(x1,x2) - i)-ox
-                temp_y = starty+((i)*abs(dy)//abs(dx))-oy
-                if 0 <= temp_x < lw and 0 <= temp_y < lh:
-                    layer_img[temp_y,temp_x]=color
+        for px, py in dots:
+            tx, ty = px - ox, py - oy
+            if 0 <= tx < lw and 0 <= ty < lh:
+                layer_img[ty, tx] = color
 
         self.redraw()
     # ================= Using Changing Tools =================
