@@ -1,3 +1,5 @@
+import sys
+import ctypes
 import tkinter as tk
 from tkinter import filedialog, colorchooser
 from tkinter import ttk
@@ -887,30 +889,133 @@ class ImageEditor:
                 y_max = max(y1,y2)
                 x_min = x1 if y_min==y1 else x2
                 x_max = x1 if y_max==y1 else x2
-                dx = x_max-x_min
                 dy = y_max-y_min
                 dy_slope = int(np.sign(x_max-x_min) * abs(x_max-x_min)//2)
-                return[(x_min, y_min), (x_min+abs(dy)+dy_slope, y_min + (abs(dy)+dy_slope)//2), (x_max,y_max), (x_min-abs(dy)+dy_slope, y_min+(abs(dy)-dy_slope)//2)]
+                p_a = (x_min, y_min)
+                p_b = (x_max, y_max)
+                # first offset corner: single clean division, exact 2:1 edge
+                p_c1 = (x_min+abs(dy)+dy_slope, y_min + (abs(dy)+dy_slope)//2)
+                # opposite corner: derived from the parallelogram identity
+                # (diagonals bisect each other) instead of its own separately
+                # rounded formula, so this edge is exactly parallel to p_a-p_c1
+                # rather than off by a pixel when (abs(dy)+dy_slope) and
+                # (abs(dy)-dy_slope) have different parity.
+                p_c2 = (p_a[0]+p_b[0]-p_c1[0], p_a[1]+p_b[1]-p_c1[1])
+                return[p_a, p_c1, p_b, p_c2]
             else:
                 x_min = min(x1,x2)
                 x_max = max(x1,x2)
                 y_min = y1 if x_min==x1 else y2
                 y_max = y1 if x_max==x1 else y2
-                dx = x_max-x_min
                 dy = y_max-y_min
                 dy_slope = int(np.sign(x_max-x_min) * abs(x_max-x_min)//2)
-                return[(x_min-(dy)+abs(dy_slope), y_min+((dy)-abs(dy_slope))//2), (x_max,y_max), (x_min+(dy)+abs(dy_slope), y_min+((dy)+abs(dy_slope))//2), (x_min,y_min)]
+                p_a = (x_min, y_min)
+                p_b = (x_max, y_max)
+                p_c0 = (x_min-(dy)+abs(dy_slope), y_min+((dy)-abs(dy_slope))//2)
+                p_c2 = (p_a[0]+p_b[0]-p_c0[0], p_a[1]+p_b[1]-p_c0[1])
+                return[p_c0, p_b, p_c2, p_a]
         
         return []
+
+    def get_fill_rect_edges(self, x1s, y1s, x2s, y2s, mode):
+        """Return the 4 border segments [(x1,y1,x2,y2), ...] that the "rect"
+        outline tool actually draws (via finalize_line) for this drag/mode.
+        Shared by the outline tool and the fill tool so a filled shape's
+        border always matches the unfilled outline pixel-for-pixel."""
+        pts = self.get_rect_points(x1s, y1s, x2s, y2s, mode)
+        edges = []
+        for i in range(len(pts)):
+            x1, y1 = pts[i][0], pts[i][1]
+            x2, y2 = pts[(i + 1) % 4][0], pts[(i + 1) % 4][1]
+            x_ref3 = pts[(i + 2) % 4][0]
+            x_ref4 = pts[(i + 3) % 4][0]
+            if y1 == y2:
+                x1, x2 = min(x1, x2) - 1, max(x1, x2)
+            elif x1 == x2:
+                y1, y2 = min(y1, y2) - 1, max(y1, y2)
+            else:
+                if y1 < y2 and x1 < x2:
+                    y2 += 1
+                    x2 += 1
+                elif y1 > y2 and x1 > x2:
+                    y1 += 1
+                    x1 += 1
+                elif y1 < y2 and x1 > x2:
+                    y2 += 1
+                    x2 -= 1
+                elif y1 > y2 and x1 < x2:
+                    y1 += 1
+                    x1 -= 1
+                if mode == "h_para" and i == 2:
+                    if max(x1, x2, x_ref3, x_ref4) == x1 and x2 != x_ref3:
+                        x1 -= 1
+                        x2 -= 1
+                    elif x2 != x_ref3:
+                        x1 += 1
+                        x2 += 1
+            if mode == "d_para":
+                if i == 1:
+                    y2 -= 1
+                elif i > 1:
+                    x1 -= 1
+                    x2 -= 1
+                    if i == 2:
+                        y1 -= 1
+            edges.append((x1, y1, x2, y2))
+        return edges
     # ================= Polygon Helpers =================
+    def _rasterize_edge_points(self, x1, y1, x2, y2):
+        """Return the list of pixel coordinates for the segment (x1,y1)-(x2,y2)
+        using the exact same stepping rule as finalize_line, so filled shapes
+        share their border with the outline rect/line tools."""
+        dx = x2 - x1
+        dy = y2 - y1
+        if dx == 0 and dy == 0:
+            return [(x1, y1)]
+
+        signx = int(np.sign(dx))
+        signy = int(np.sign(dy))
+        startx = min(x1, x2)
+        starty = min(y1, y2)
+
+        pts = []
+        if abs(dx) < abs(dy):
+            for i in range(abs(dy)):
+                temp_x = startx + (i * abs(dx) // abs(dy))
+                temp_y = starty + i if (signx * signy > 0) else max(y1, y2) - i
+                pts.append((temp_x, temp_y))
+        else:
+            for i in range(abs(dx)):
+                temp_x = startx + i if (signx * signy > 0) else max(x1, x2) - i
+                temp_y = starty + (i * abs(dy) // abs(dx))
+                pts.append((temp_x, temp_y))
+        return pts
+
     def _make_polygon_mask(self, pts, shape):
         """Return a boolean numpy mask (h, w) where True = inside polygon.
-        pts: list of (x, y) in layer-local coordinates."""
-        from PIL import ImageDraw as PILImageDraw
+        pts: list of (x, y) in layer-local coordinates.
+
+        Rasterizes the polygon border with the same per-edge stepping as
+        finalize_line, then fills each row between its leftmost and
+        rightmost border pixel (scanline fill), so the fill matches the
+        border drawn by the rect/line tools exactly."""
         h, w = shape
-        mask_img = Image.new("L", (w, h), 0)
-        PILImageDraw.Draw(mask_img).polygon(pts, fill=255)
-        return np.array(mask_img) > 0
+        mask = np.zeros((h, w), dtype=bool)
+
+        n = len(pts)
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            for x, y in self._rasterize_edge_points(x1, y1, x2, y2):
+                if 0 <= x < w and 0 <= y < h:
+                    mask[y, x] = True
+
+        for y in range(h):
+            xs = np.nonzero(mask[y])[0]
+            if xs.size:
+                mask[y, xs.min():xs.max() + 1] = True
+
+        return mask
 
     def fill_polygon_pixels(self, pts):
         """Fill the interior of a polygon (image coordinates) with draw_color."""
@@ -920,6 +1025,31 @@ class ImageEditor:
         oy = layer_dict.get("off_y", 0)
         adj_pts = [(x - ox, y - oy) for x, y in pts]
         mask = self._make_polygon_mask(adj_pts, layer_img.shape[:2])
+        if mask.any():
+            layer_img[mask] = self.draw_color
+
+    def fill_rect_edges(self, edges):
+        """Fill the area bounded by explicit border segments (image coords),
+        e.g. from get_fill_rect_edges, with draw_color. Rasterizes each
+        segment with the same rule finalize_line uses, so the filled area's
+        border is identical to the unfilled outline's border."""
+        layer_dict = self.layers[self.active_layer]
+        layer_img = layer_dict["img"]
+        ox = layer_dict.get("off_x", 0)
+        oy = layer_dict.get("off_y", 0)
+        h, w = layer_img.shape[:2]
+
+        mask = np.zeros((h, w), dtype=bool)
+        for x1, y1, x2, y2 in edges:
+            for x, y in self._rasterize_edge_points(x1 - ox, y1 - oy, x2 - ox, y2 - oy):
+                if 0 <= x < w and 0 <= y < h:
+                    mask[y, x] = True
+
+        for y in range(h):
+            xs = np.nonzero(mask[y])[0]
+            if xs.size:
+                mask[y, xs.min():xs.max() + 1] = True
+
         if mask.any():
             layer_img[mask] = self.draw_color
 
@@ -1030,8 +1160,8 @@ class ImageEditor:
             self.finalize_line(x1, y1, ix, iy)
             return
         if self.tool == "fill_rect" and self.line_start:
-            pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
-            self.fill_polygon_pixels(pts)
+            edges = self.get_fill_rect_edges(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+            self.fill_rect_edges(edges)
             self.line_start = None
             self.redraw()
             return
@@ -1047,46 +1177,8 @@ class ImageEditor:
             self.redraw()
             return
         if self.tool == "rect" and self.line_start:
-            pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
-            for i in range(len(pts)):
-                x1, y1 = pts[i][0],pts[i][1]
-                x2, y2 = pts[(i+1)%4][0],pts[(i+1)%4][1]
-                x_ref3 = pts[(i+2)%4][0]
-                x_ref4 = pts[(i+3)%4][0]
-                if y1==y2:
-                    x1, x2 = min(x1,x2)-1, max(x1,x2)
-                elif x1==x2:
-                    y1, y2 = min(y1,y2)-1, max(y1,y2)
-                else:
-                    if y1<y2 and x1<x2:
-                        y2+=1
-                        x2+=1
-                    elif y1>y2 and x1>x2:
-                        y1+=1
-                        x1+=1
-                    elif y1<y2 and x1>x2:
-                        y2+=1
-                        x2-=1
-                    elif y1>y2 and x1<x2:
-                        y1+=1
-                        x1-=1
-                    if self.rect_mode.get() == "h_para" and i==2:
-                        if max(x1,x2,x_ref3,x_ref4)==x1 and x2!=x_ref3:
-                            x1-=1
-                            x2-=1
-                        elif x2!=x_ref3:
-                            x1+=1
-                            x2+=1
-                if self.rect_mode.get() == "d_para":
-                    if i==1:
-                        y2-=1
-                    elif i>1:
-                        x1-=1
-                        x2-=1
-                        if i==2:
-                            y1-=1
-
-
+            edges = self.get_fill_rect_edges(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+            for x1, y1, x2, y2 in edges:
                 self.finalize_line(x1, y1, x2, y2)
             self.line_start = None
             self.redraw()
@@ -1213,13 +1305,19 @@ class ImageEditor:
         )
     def draw_preview_rect(self, ix, iy):
         pts = self.get_rect_points(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
+        edges = self.get_fill_rect_edges(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
         r, g, b = self.draw_color[:3]
         hex_color = f"#{r:02x}{g:02x}{b:02x}"
-        for i in range(len(pts)):
-            p1 = pts[i]
-            p2 = pts[(i+1)%4]
-            self.canvas.create_line(p1[0]*self.zoom, p1[1]*self.zoom, 
-                                    p2[0]*self.zoom, p2[1]*self.zoom, fill=hex_color, dash=(4,4))
+        for x1, y1, x2, y2 in edges:
+            # edges' own (x1,y1)/(x2,y2) include a padding nudge that lets
+            # finalize_line's pixel loop reach the true corner, but that
+            # nudged coordinate is never itself a drawn pixel. Use the
+            # actual first/last rasterized pixel (same rule finalize_line
+            # uses) so the preview lands exactly on the real drawn corner.
+            raster = self._rasterize_edge_points(x1, y1, x2, y2)
+            (fx, fy), (lx, ly) = raster[0], raster[-1]
+            self.canvas.create_line(fx*self.zoom, fy*self.zoom,
+                                    lx*self.zoom, ly*self.zoom, fill=hex_color, dash=(4,4))
         info_text = f"{pts[0]}{pts[1]}{pts[2]}{pts[3]}"
         x2 = ix * self.zoom
         y2 = iy * self.zoom
@@ -1251,16 +1349,19 @@ class ImageEditor:
 
         print(f"draw line from {x1},{y1} to {x2},{y2}, ({dx},{dy})")
 
+        lh, lw = layer_img.shape[:2]
         if abs(dx)<abs(dy):
             for i in range(abs(dy)):
                 temp_x = startx+((i)*abs(dx)//abs(dy))-ox
                 temp_y = (starty + i if (signx*signy>0) else max(y1,y2) - i)-oy
-                layer_img[temp_y,temp_x]=color
+                if 0 <= temp_x < lw and 0 <= temp_y < lh:
+                    layer_img[temp_y,temp_x]=color
         else:
             for i in range(abs(dx)):
                 temp_x = (startx + i if (signx*signy>0) else max(x1,x2) - i)-ox
                 temp_y = starty+((i)*abs(dy)//abs(dx))-oy
-                layer_img[temp_y,temp_x]=color
+                if 0 <= temp_x < lw and 0 <= temp_y < lh:
+                    layer_img[temp_y,temp_x]=color
 
         self.redraw()
     # ================= Using Changing Tools =================
@@ -1921,6 +2022,21 @@ class ImageEditor:
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        try:
+            # Make the process DPI-aware so mouse event coordinates line up
+            # 1:1 with the pixels Tk actually draws. Without this, Windows
+            # display scaling (>100%) makes the OS scale mouse coordinates
+            # while Tk still renders at "96 DPI" logical pixels, so the
+            # cursor position reported by events drifts from the pixel the
+            # user actually clicked on.
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
     root = tk.Tk()
     ImageEditor(root)
     root.mainloop()
