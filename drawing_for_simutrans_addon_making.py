@@ -9,6 +9,22 @@ import change_image_paksize
 import png_merge_for_simutrans
 
 
+class _DirtyTrackingList(list):
+    """A list that flags its owner as having unsaved changes whenever a new
+    undo record is pushed. Every mutating tool (paint, rect, fill, layer
+    add/move, paste, resize, ...) already pushes exactly one undo record per
+    action, so hooking append() here is a single, reliable place to detect
+    "the document changed" without threading a dirty flag through every
+    mutation site individually."""
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner
+
+    def append(self, item):
+        self._owner.dirty = True
+        super().append(item)
+
+
 class ImageEditor:
     def __init__(self, root):
         self.root = root
@@ -22,8 +38,12 @@ class ImageEditor:
         self.bg_pattern = self.create_base_tile()
         self.canvas_bg_ids = []
 
+        # ---- save state ----
+        self.file_path = None
+        self.dirty = False
+
         # ---- undo / redo ----
-        self.undo_stack = []
+        self.undo_stack = _DirtyTrackingList(self)
         self.redo_stack = []
         self.current_stroke = []
         self.after_id = None
@@ -102,8 +122,10 @@ class ImageEditor:
         notebook.add(tab_layer, text="Layer")
         notebook.add(tab_process, text="Process")
 
+        tk.Button(tab_file, text="New", command=self.new_canvas).pack(side=tk.LEFT)
         tk.Button(tab_file, text="Open", command=self.open_image).pack(side=tk.LEFT)
         tk.Button(tab_file, text="Save", command=self.save_image).pack(side=tk.LEFT)
+        tk.Button(tab_file, text="Save As...", command=self.save_image_as).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Undo", command=self.undo).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Redo", command=self.redo).pack(side=tk.LEFT)
 
@@ -346,6 +368,7 @@ class ImageEditor:
         self.root.bind("<Control-a>", lambda e: self.select_all())
         self.root.bind("<Escape>", self.clear_selection)
         self.root.bind("<Return>", lambda e: self.finalize_paste())
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         # self.canvas.bind("<Button-4>", self.on_linux_scroll_up)
         # self.canvas.bind("<Button-5>", self.on_linux_scroll_down)
 
@@ -397,6 +420,9 @@ class ImageEditor:
             self.rect_icons[m] = ImageTk.PhotoImage(img)
     # ================= Image I/O =================
     def open_image(self):
+        if not self.confirm_unsaved_changes():
+            return
+
         path = filedialog.askopenfilename(filetypes=[("PNG", "*.png")])
         if not path:
             return
@@ -418,17 +444,143 @@ class ImageEditor:
         self.zoom = 1.0
         self.zoom_scale.set(2)
 
+        self.file_path = path
+        self.dirty = False
+
         self.refresh_layer_panel()
         self.redraw()
 
+    def new_canvas(self):
+        if not self.confirm_unsaved_changes():
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("New Canvas")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        tk.Label(dialog, text="Width:").grid(row=0, column=0, padx=6, pady=6, sticky="e")
+        w_entry = tk.Entry(dialog, width=8)
+        w_entry.insert(0, str(self.build_paksize))
+        w_entry.grid(row=0, column=1, padx=6, pady=6)
+
+        tk.Label(dialog, text="Height:").grid(row=1, column=0, padx=6, pady=6, sticky="e")
+        h_entry = tk.Entry(dialog, width=8)
+        h_entry.insert(0, str(self.build_paksize))
+        h_entry.grid(row=1, column=1, padx=6, pady=6)
+
+        error_label = tk.Label(dialog, text="", fg="red")
+        error_label.grid(row=2, column=0, columnspan=2)
+
+        def create():
+            from tkinter import messagebox
+            try:
+                w = int(w_entry.get())
+                h = int(h_entry.get())
+            except ValueError:
+                error_label.config(text="Width/Height must be integers")
+                return
+            if w <= 0 or h <= 0:
+                error_label.config(text="Width/Height must be positive")
+                return
+
+            self.width, self.height = w, h
+            self.layers = [{
+                "img": np.zeros((h, w, 4), dtype=np.uint8),
+                "visible": True
+            }]
+            self.active_layer = 0
+
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+
+            self.view_x = self.view_y = 0
+            self.zoom = 1.0
+            self.zoom_scale.set(2)
+
+            self.file_path = None
+            self.dirty = False
+
+            self.refresh_layer_panel()
+            self.redraw()
+            dialog.destroy()
+
+        tk.Button(dialog, text="Create", command=create, bg="#d0ffd0").grid(
+            row=3, column=0, columnspan=2, pady=8)
+        w_entry.focus_set()
+
     def save_image(self):
         if not self.layers:
-            return
+            return False
+        if not self.file_path:
+            return self.save_image_as()
+
+        out = self.compose_layers(for_display=False)
+        Image.fromarray(out, "RGBA").save(self.file_path)
+        self.dirty = False
+        return True
+
+    def save_image_as(self):
+        if not self.layers:
+            return False
 
         out = self.compose_layers(for_display=False)
         path = filedialog.asksaveasfilename(defaultextension=".png")
-        if path:
-            Image.fromarray(out, "RGBA").save(path)
+        if not path:
+            return False
+
+        Image.fromarray(out, "RGBA").save(path)
+        self.file_path = path
+        self.dirty = False
+        return True
+
+    def confirm_unsaved_changes(self):
+        """If there are unsaved changes, ask the user whether to save,
+        save as, or discard them. Returns True if it's OK to proceed
+        (changes were saved or the user chose to discard them), False if
+        the user cancelled (the caller should abort whatever it was about
+        to do: opening another file, starting a new canvas, or closing)."""
+        if not self.dirty:
+            return True
+
+        result = {"choice": "cancel"}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Unsaved Changes")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        tk.Label(dialog, text="You have unsaved changes.\nWhat would you like to do?",
+                 justify="left", padx=16, pady=12).pack()
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=(0, 12), padx=12)
+
+        def choose(c):
+            result["choice"] = c
+            dialog.destroy()
+
+        tk.Button(btn_frame, text="Save", width=10,
+                  command=lambda: choose("save")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_frame, text="Save As...", width=10,
+                  command=lambda: choose("save_as")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_frame, text="Don't Save", width=10,
+                  command=lambda: choose("discard")).pack(side=tk.LEFT, padx=4)
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+        dialog.wait_window()
+
+        if result["choice"] == "save":
+            return self.save_image()
+        if result["choice"] == "save_as":
+            return self.save_image_as()
+        if result["choice"] == "discard":
+            return True
+        return False
+
+    def on_close(self):
+        if self.confirm_unsaved_changes():
+            self.root.destroy()
 
     # ================= Layers =================
     def merge_layer(self, mode="add"):
@@ -1308,14 +1460,33 @@ class ImageEditor:
         edges = self.get_fill_rect_edges(self.line_start[0], self.line_start[1], ix, iy, self.rect_mode.get())
         r, g, b = self.draw_color[:3]
         hex_color = f"#{r:02x}{g:02x}{b:02x}"
+
+        # edges' own (x1,y1)/(x2,y2) include a padding nudge that lets
+        # finalize_line's pixel loop reach the true corner, but that nudged
+        # coordinate is never itself a drawn pixel. Use the actual first/last
+        # rasterized pixel (same rule finalize_line uses) instead.
+        endpoints = []
         for x1, y1, x2, y2 in edges:
-            # edges' own (x1,y1)/(x2,y2) include a padding nudge that lets
-            # finalize_line's pixel loop reach the true corner, but that
-            # nudged coordinate is never itself a drawn pixel. Use the
-            # actual first/last rasterized pixel (same rule finalize_line
-            # uses) so the preview lands exactly on the real drawn corner.
             raster = self._rasterize_edge_points(x1, y1, x2, y2)
-            (fx, fy), (lx, ly) = raster[0], raster[-1]
+            endpoints.append((raster[0], raster[-1]))
+
+        # A drawn pixel (px,py) visually covers the square [px,px+1)x[py,py+1)
+        # on screen. Anchoring every point at its pixel's near (top-left)
+        # corner makes the north/west sides line up, but leaves the
+        # south/east sides looking a full pixel short of the actually
+        # rendered extent. So pixels on the shape's own right/bottom edge
+        # need to be anchored at their far corner instead.
+        all_pts = [p for pair in endpoints for p in pair]
+        x_max = max(p[0] for p in all_pts)
+        y_max = max(p[1] for p in all_pts)
+
+        def outer_corner(p):
+            px, py = p
+            return (px + 1 if px == x_max else px, py + 1 if py == y_max else py)
+
+        for f, l in endpoints:
+            fx, fy = outer_corner(f)
+            lx, ly = outer_corner(l)
             self.canvas.create_line(fx*self.zoom, fy*self.zoom,
                                     lx*self.zoom, ly*self.zoom, fill=hex_color, dash=(4,4))
         info_text = f"{pts[0]}{pts[1]}{pts[2]}{pts[3]}"
@@ -1665,6 +1836,7 @@ class ImageEditor:
     def undo(self):
         if not self.undo_stack:
             return
+        self.dirty = True
         stroke = self.undo_stack.pop()
 
         if isinstance(stroke, dict) and stroke.get("type") == "full":
@@ -1866,6 +2038,23 @@ class ImageEditor:
                         cx - r_w, cy + r_h       # 左
                     ]
                     self.canvas.create_polygon(points, fill="", outline="yellow", width=1, tags="guide")
+
+    def draw_pixel_grid(self, ix1, iy1, ix2, iy2):
+        """Draw a 1px-per-pixel grid over the visible area once zoomed in
+        enough (>=600%) for individual pixels to be worth distinguishing."""
+        if self.zoom < 6.0:
+            return
+        x0 = self.canvas.canvasx(0)
+        y0 = self.canvas.canvasy(0)
+        zw = (ix2 - ix1) * self.zoom
+        zh = (iy2 - iy1) * self.zoom
+        for x in range(ix1, ix2 + 1):
+            cx = x0 + (x - ix1) * self.zoom
+            self.canvas.create_line(cx, y0, cx, y0 + zh, fill="#808080", tags="pixel_grid")
+        for y in range(iy1, iy2 + 1):
+            cy = y0 + (y - iy1) * self.zoom
+            self.canvas.create_line(x0, cy, x0 + zw, cy, fill="#808080", tags="pixel_grid")
+
     def toggle_special_color_mode(self):
         self.special_color_mode = not self.special_color_mode
         self.redraw()
@@ -1941,12 +2130,14 @@ class ImageEditor:
         self.canvas.delete("all")
 
         self.canvas.create_image(
-            self.canvas.canvasx(0), 
-            self.canvas.canvasy(0), 
-            image=self.tkimg, 
+            self.canvas.canvasx(0),
+            self.canvas.canvasy(0),
+            image=self.tkimg,
             anchor="nw"
         )
-        
+
+        self.draw_pixel_grid(ix1, iy1, ix2, iy2)
+
         self.canvas.delete("selection_ui")
         if self.tool == "select" and self.selection_rect:
             x1, y1, x2, y2 = self.selection_rect
