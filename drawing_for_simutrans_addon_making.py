@@ -25,6 +25,61 @@ class _DirtyTrackingList(list):
         super().append(item)
 
 
+def color_range_mask(img, orig_rgb, color_range, special_colors, ignore_special=False):
+    """Pixels that replace_color_range would update: non-transparent, RGB
+    within color_range of orig_rgb on every channel, and (if
+    ignore_special) not already a Simutrans special color."""
+    rgb = img[..., :3].astype(np.int16)
+    X = np.asarray(orig_rgb, dtype=np.int16)
+    R = np.broadcast_to(np.asarray(color_range, dtype=np.int16), (3,))
+    mask = np.all(np.abs(rgb - X) <= R, axis=-1) & (img[..., 3] > 0)
+    if ignore_special:
+        for color in special_colors:
+            mask &= ~np.all(rgb == color, axis=-1)
+    return mask
+
+
+def replace_color_range(img, orig_rgb, color_range, new_rgb, new_alpha,
+                        special_colors, ignore_special=False):
+    """Shift every pixel whose RGB lies within color_range of orig_rgb
+    (per channel, |x - X| <= range) to new_rgb + (x - orig_rgb), keeping
+    the pixel's offset from the original color. Updated pixels get
+    new_alpha and are nudged off any Simutrans special color. Fully
+    transparent pixels are never touched. If ignore_special is True,
+    pixels that are already a special color are skipped.
+    Returns (new_img, changed_mask); img itself is not modified."""
+    rgb = img[..., :3].astype(np.int16)
+    X = np.asarray(orig_rgb, dtype=np.int16)
+    Y = np.asarray(new_rgb, dtype=np.int16)
+    specials = np.asarray(special_colors, dtype=np.int16).reshape(-1, 3)
+
+    def is_special(arr):
+        return (arr[..., None, :] == specials).all(axis=-1).any(axis=-1)
+
+    mask = color_range_mask(img, orig_rgb, color_range, special_colors, ignore_special)
+
+    new_rgb_vals = np.clip(Y + (rgb[mask] - X), 0, 255)
+
+    # Nudge results that landed on a special color by 1 step in blue
+    # (or red/green if blue can't move), repeating until clear.
+    for _ in range(8):
+        hit = is_special(new_rgb_vals)
+        if not hit.any():
+            break
+        for c in (2, 1, 0):
+            vals = new_rgb_vals[hit, c]
+            vals = np.where(vals < 255, vals + 1, vals - 1)
+            new_rgb_vals[hit, c] = vals
+            hit = is_special(new_rgb_vals)
+            if not hit.any():
+                break
+
+    out = img.copy()
+    out[mask, :3] = new_rgb_vals.astype(np.uint8)
+    out[mask, 3] = np.uint8(max(0, min(255, int(new_alpha))))
+    return out, mask
+
+
 class ImageEditor:
     def __init__(self, root):
         self.root = root
@@ -123,6 +178,7 @@ class ImageEditor:
         tab_color = tk.Frame(notebook)
         tab_layer = tk.Frame(notebook)
         tab_process = tk.Frame(notebook)
+        tab_replace = tk.Frame(notebook)
 
         notebook.add(tab_file, text="File")
         notebook.add(tab_edit, text="Edit")
@@ -130,6 +186,14 @@ class ImageEditor:
         # notebook.add(tab_draw, text="Draw")
         notebook.add(tab_layer, text="Layer")
         notebook.add(tab_process, text="Process")
+        notebook.add(tab_replace, text="Color Replace")
+        self.create_color_replace_ui(tab_replace)
+        self.replace_tab_active = False
+
+        def on_tab_changed(e):
+            self.replace_tab_active = (notebook.select() == str(tab_replace))
+            self.redraw()
+        notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
 
         tk.Button(tab_file, text="New", command=self.new_canvas).pack(side=tk.LEFT)
         tk.Button(tab_file, text="Open", command=self.open_image).pack(side=tk.LEFT)
@@ -1894,6 +1958,144 @@ class ImageEditor:
         layer[mask] = replace
 
         self.redraw()
+    def create_color_replace_ui(self, parent):
+        self.replace_color_entries = {}
+        self.replace_color_previews = {}
+
+        for col, (label, key, default) in enumerate([
+                ("Original (R,G,B):", "orig", "255,0,0"),
+                ("Update (R,G,B):", "new", "0,0,255")]):
+            f = tk.Frame(parent)
+            f.pack(side=tk.LEFT, padx=5)
+            tk.Label(f, text=label).pack(side=tk.LEFT)
+            entry = tk.Entry(f, width=12)
+            entry.insert(0, default)
+            entry.pack(side=tk.LEFT)
+            entry.bind("<KeyRelease>", lambda e: self.update_replace_color_previews())
+            preview = tk.Canvas(f, width=20, height=20, bd=1, relief="sunken")
+            preview.pack(side=tk.LEFT, padx=2)
+            preview.bind("<Button-1>", lambda e, k=key: self.choose_replace_color(k))
+            tk.Button(f, text="Use Current", command=lambda k=key: self.set_replace_color(
+                k, self.draw_color[:3])).pack(side=tk.LEFT)
+            self.replace_color_entries[key] = entry
+            self.replace_color_previews[key] = preview
+
+        f = tk.Frame(parent)
+        f.pack(side=tk.LEFT, padx=5)
+        tk.Label(f, text="Range (int or R,G,B):").pack(side=tk.LEFT)
+        self.replace_range_entry = tk.Entry(f, width=10)
+        self.replace_range_entry.insert(0, "16")
+        self.replace_range_entry.pack(side=tk.LEFT)
+        self.replace_range_entry.bind("<KeyRelease>", lambda e: self.redraw())
+
+        tk.Label(f, text="New Alpha:").pack(side=tk.LEFT, padx=(6, 0))
+        self.replace_alpha_entry = tk.Entry(f, width=4)
+        self.replace_alpha_entry.insert(0, "255")
+        self.replace_alpha_entry.pack(side=tk.LEFT)
+
+        self.replace_ignore_special_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(parent, text="Ignore Special Color",
+                       variable=self.replace_ignore_special_var,
+                       command=self.redraw).pack(side=tk.LEFT, padx=5)
+        self.replace_preview_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(parent, text="Preview",
+                       variable=self.replace_preview_var,
+                       command=self.redraw).pack(side=tk.LEFT, padx=5)
+        tk.Button(parent, text="Apply Replace", bg="#d0ffd0",
+                  command=self.replace_color_active_layer).pack(side=tk.LEFT, padx=5)
+
+        self.update_replace_color_previews()
+
+    def parse_rgb_text(self, text):
+        """'r,g,b' -> [r,g,b] (each clamped to 0..255); a single int -> [n,n,n]."""
+        parts = [int(p) for p in text.replace(" ", "").split(",") if p != ""]
+        if len(parts) == 1:
+            parts = parts * 3
+        if len(parts) != 3:
+            raise ValueError(text)
+        return [max(0, min(255, v)) for v in parts]
+
+    def set_replace_color(self, key, rgb):
+        entry = self.replace_color_entries[key]
+        entry.delete(0, tk.END)
+        entry.insert(0, ",".join(str(int(v)) for v in rgb))
+        self.update_replace_color_previews()
+
+    def choose_replace_color(self, key):
+        try:
+            initial = "#{:02x}{:02x}{:02x}".format(
+                *self.parse_rgb_text(self.replace_color_entries[key].get()))
+        except ValueError:
+            initial = None
+        c = colorchooser.askcolor(color=initial)
+        if c[0]:
+            self.set_replace_color(key, c[0])
+
+    def update_replace_color_previews(self):
+        for key, preview in self.replace_color_previews.items():
+            preview.delete("all")
+            try:
+                r, g, b = self.parse_rgb_text(self.replace_color_entries[key].get())
+            except ValueError:
+                continue
+            preview.create_rectangle(0, 0, 20, 20, fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
+        self.redraw()
+
+    def get_replace_preview_mask(self):
+        """Canvas-sized mask of the pixels Apply Replace would change on
+        the active layer, or None when the preview shouldn't be shown."""
+        if not (getattr(self, "replace_tab_active", False)
+                and self.replace_preview_var.get() and self.layers):
+            return None
+        try:
+            orig = self.parse_rgb_text(self.replace_color_entries["orig"].get())
+            rng = self.parse_rgb_text(self.replace_range_entry.get())
+        except ValueError:
+            return None
+
+        layer = self.layers[self.active_layer]
+        if not layer["visible"]:
+            return None
+        lmask = color_range_mask(layer["img"], orig, rng, self.special_color_list,
+                                 self.replace_ignore_special_var.get())
+
+        # place the layer-space mask onto the canvas (layers can be offset)
+        out = np.zeros((self.height, self.width), dtype=bool)
+        lh, lw = lmask.shape
+        ox, oy = layer.get("off_x", 0), layer.get("off_y", 0)
+        x1, y1 = max(0, ox), max(0, oy)
+        x2, y2 = min(self.width, ox + lw), min(self.height, oy + lh)
+        if x2 > x1 and y2 > y1:
+            out[y1:y2, x1:x2] = lmask[y1 - oy:y2 - oy, x1 - ox:x2 - ox]
+        return out
+
+    def replace_color_active_layer(self):
+        if not self.layers:
+            return
+        from tkinter import messagebox
+        try:
+            orig = self.parse_rgb_text(self.replace_color_entries["orig"].get())
+            new = self.parse_rgb_text(self.replace_color_entries["new"].get())
+            rng = self.parse_rgb_text(self.replace_range_entry.get())
+            alpha = max(0, min(255, int(self.replace_alpha_entry.get())))
+        except ValueError:
+            messagebox.showerror("Error", "Colors/range must be 'R,G,B' or an integer, alpha 0-255")
+            return
+
+        layer = self.layers[self.active_layer]
+        out, mask = replace_color_range(
+            layer["img"], orig, rng, new, alpha, self.special_color_list,
+            ignore_special=self.replace_ignore_special_var.get())
+        if not mask.any():
+            self.info.config(text="Color Replace: no pixels in range")
+            return
+
+        self.save_full_undo(self.active_layer)
+        layer["img"] = out
+        self.info.config(text=f"Color Replace: {int(mask.sum())} pixels updated")
+        self.refresh_layer_panel()
+        self.redraw()
+
     def delete_background_active_layer(self):
         if not self.layers:
             return
@@ -2411,6 +2613,9 @@ class ImageEditor:
         if self.special_color_mode:
             print("show special color's region")
             img_full = self.get_emphasized_image(img_full)
+        replace_mask = self.get_replace_preview_mask()
+        if replace_mask is not None and replace_mask.any():
+            img_full[replace_mask, :3] = (img_full[replace_mask, :3] * 0.3).astype(np.uint8)
         img_crop = img_full[iy1:iy2, ix1:ix2]
 
         crop_h, crop_w = img_crop.shape[:2]
