@@ -39,6 +39,41 @@ def color_range_mask(img, orig_rgb, color_range, special_colors, ignore_special=
     return mask
 
 
+def _luminance(rgb):
+    rgb = np.asarray(rgb, dtype=np.float32)
+    return rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+
+
+def replace_to_player_color(img, orig_rgb, color_range, shades, base_shade,
+                            new_alpha, special_colors, ignore_special=False):
+    """Recolor pixels within color_range of orig_rgb (same matching as
+    replace_color_range) to one of the player color shades.
+    The original color itself maps to shades[base_shade]; every other pixel's
+    darkness relative to the original (lum(x) / lum(X)) is applied to that
+    shade's luminance, and the shade with the nearest luminance is used.
+    shades: 8 RGB colors, dark to bright.
+    Returns (new_img, changed_mask); img itself is not modified."""
+    mask = color_range_mask(img, orig_rgb, color_range, special_colors, ignore_special)
+
+    shades = np.asarray(shades, dtype=np.uint8)
+    shade_lum = _luminance(shades)
+    pix_lum = _luminance(img[mask, :3])
+    orig_lum = float(_luminance(orig_rgb))
+    base_lum = shade_lum[base_shade]
+    if orig_lum >= 1.0:
+        target_lum = base_lum * pix_lum / orig_lum
+    else:
+        # original is (near) black: ratio is meaningless, use the difference
+        target_lum = base_lum + (pix_lum - orig_lum)
+
+    idx = np.abs(target_lum[:, None] - shade_lum[None, :]).argmin(axis=1)
+
+    out = img.copy()
+    out[mask, :3] = shades[idx]
+    out[mask, 3] = np.uint8(max(0, min(255, int(new_alpha))))
+    return out, mask
+
+
 def replace_color_range(img, orig_rgb, color_range, new_rgb, new_alpha,
                         special_colors, ignore_special=False):
     """Shift every pixel whose RGB lies within color_range of orig_rgb
@@ -154,6 +189,11 @@ class ImageEditor:
             [180,157,7],[198,180,8],[217,203,10],[236,226,11],[255,249,13]
         ]
         self.special_color_mode = False
+        # player color shades, dark -> bright (subsets of special_color_list)
+        self.player_color_shades = {
+            "player1": self.special_color_list[14:22],
+            "player2": self.special_color_list[22:30],
+        }
 
         self.create_ui()
 
@@ -2001,10 +2041,47 @@ class ImageEditor:
         tk.Checkbutton(parent, text="Preview",
                        variable=self.replace_preview_var,
                        command=self.redraw).pack(side=tk.LEFT, padx=5)
+
+        # ---- mode: shift to update color, or map onto player color shades ----
+        mode_frame = tk.LabelFrame(parent, text="Replace To")
+        mode_frame.pack(side=tk.LEFT, padx=5)
+        self.replace_mode_var = tk.StringVar(value="shift")
+        for text, mode in [("Update Color", "shift"), ("Player 1", "player1"), ("Player 2", "player2")]:
+            tk.Radiobutton(mode_frame, text=text, variable=self.replace_mode_var, value=mode,
+                           command=self.update_player_shade_swatches).pack(side=tk.LEFT)
+
+        # base shade: which of the 8 shades the original color itself becomes
+        self.player_shade_frame = tk.LabelFrame(parent, text="Base Shade (= Original)")
+        self.player_shade_frame.pack(side=tk.LEFT, padx=5)
+        self.player_base_shade = 5
+        self.player_shade_swatches = []
+        for i in range(8):
+            sw = tk.Canvas(self.player_shade_frame, width=16, height=16, bd=0, highlightthickness=2)
+            sw.pack(side=tk.LEFT, padx=1)
+            sw.bind("<Button-1>", lambda e, i=i: self.set_player_base_shade(i))
+            self.player_shade_swatches.append(sw)
+
         tk.Button(parent, text="Apply Replace", bg="#d0ffd0",
                   command=self.replace_color_active_layer).pack(side=tk.LEFT, padx=5)
 
         self.update_replace_color_previews()
+        self.update_player_shade_swatches()
+
+    def set_player_base_shade(self, i):
+        self.player_base_shade = i
+        self.update_player_shade_swatches()
+
+    def update_player_shade_swatches(self):
+        mode = self.replace_mode_var.get()
+        shades = self.player_color_shades.get(mode, self.player_color_shades["player1"])
+        enabled = mode in self.player_color_shades
+        for i, sw in enumerate(self.player_shade_swatches):
+            r, g, b = shades[i]
+            sw.delete("all")
+            sw.create_rectangle(0, 0, 20, 20, fill=f"#{r:02x}{g:02x}{b:02x}" if enabled else "#d9d9d9",
+                                outline="")
+            selected = enabled and i == self.player_base_shade
+            sw.config(highlightbackground="#ff0000" if selected else "#d9d9d9")
 
     def parse_rgb_text(self, text):
         """'r,g,b' -> [r,g,b] (each clamped to 0..255); a single int -> [n,n,n]."""
@@ -2083,9 +2160,17 @@ class ImageEditor:
             return
 
         layer = self.layers[self.active_layer]
-        out, mask = replace_color_range(
-            layer["img"], orig, rng, new, alpha, self.special_color_list,
-            ignore_special=self.replace_ignore_special_var.get())
+        mode = self.replace_mode_var.get()
+        ignore_special = self.replace_ignore_special_var.get()
+        if mode in self.player_color_shades:
+            out, mask = replace_to_player_color(
+                layer["img"], orig, rng, self.player_color_shades[mode],
+                self.player_base_shade, alpha, self.special_color_list,
+                ignore_special=ignore_special)
+        else:
+            out, mask = replace_color_range(
+                layer["img"], orig, rng, new, alpha, self.special_color_list,
+                ignore_special=ignore_special)
         if not mask.any():
             self.info.config(text="Color Replace: no pixels in range")
             return
