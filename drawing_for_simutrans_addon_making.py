@@ -1,4 +1,7 @@
 import sys
+import os
+import json
+import locale
 import ctypes
 import tkinter as tk
 from tkinter import filedialog, colorchooser
@@ -7,6 +10,39 @@ from PIL import Image, ImageTk
 import numpy as np
 import change_image_paksize
 import png_merge_for_simutrans
+import translate_jp
+
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".drawing_for_simutrans_addon_making.json")
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def detect_language():
+    """'ja' if the OS UI language is Japanese, otherwise 'en'."""
+    if sys.platform == "win32":
+        try:
+            # 0x11 = LANG_JAPANESE (primary language id)
+            if ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x11:
+                return "ja"
+            return "en"
+        except Exception:
+            pass
+    name = (locale.getlocale()[0] or "").lower()
+    return "ja" if name.startswith("ja") or name.startswith("japanese") else "en"
 
 
 class _DirtyTrackingList(list):
@@ -116,6 +152,14 @@ def replace_color_range(img, orig_rgb, color_range, new_rgb, new_alpha,
 
 
 class ImageEditor:
+    # internal tool id -> English name shown in the status bar
+    TOOL_NAMES = {
+        "pen": "Pen", "fill": "Fill", "line": "Line", "eraser": "Eraser",
+        "pipette": "Pipette", "move": "Move", "select": "Select",
+        "para_select": "ParaSelect", "rect": "Rect", "fill_rect": "FillRect",
+        "prism": "Prism", "move_paste": "Paste",
+    }
+
     def __init__(self, root):
         self.root = root
         self.root.title("drawing for simutrans addon making")
@@ -146,6 +190,7 @@ class ImageEditor:
         self.view_x = 0
         self.view_y = 0
         self.pan_start = None
+        self.status_message = ""  # extra text in the status bar until the next click
         self.inactive_dim_factor = 0.4
         self.line_start = None
 
@@ -195,7 +240,15 @@ class ImageEditor:
             "player2": self.special_color_list[22:30],
         }
 
+        # ---- language ----
+        self.settings = load_settings()
+        self.lang = self.settings.get("language")
+        if self.lang not in translate_jp.LANGUAGES:
+            self.lang = detect_language()
+        self.i18n_source = {}  # widget -> {option: English text}
+
         self.create_ui()
+        self.apply_language()
 
     # ================= UI =================
     def create_ui(self):
@@ -212,6 +265,7 @@ class ImageEditor:
 
         notebook = ttk.Notebook(bar)
         notebook.pack(fill=tk.X)
+        self.notebook = notebook
 
         tab_file = tk.Frame(notebook)
         tab_edit = tk.Frame(notebook)
@@ -227,6 +281,7 @@ class ImageEditor:
         notebook.add(tab_layer, text="Layer")
         notebook.add(tab_process, text="Process")
         notebook.add(tab_replace, text="Color Replace")
+        self.tab_names = ["File", "Edit", "Special Colors", "Layer", "Process", "Color Replace"]
         self.create_color_replace_ui(tab_replace)
         self.replace_tab_active = False
 
@@ -239,6 +294,14 @@ class ImageEditor:
         tk.Button(tab_file, text="Open", command=self.open_image).pack(side=tk.LEFT)
         tk.Button(tab_file, text="Save", command=self.save_image).pack(side=tk.LEFT)
         tk.Button(tab_file, text="Save As...", command=self.save_image_as).pack(side=tk.LEFT)
+        lang_frame = tk.Frame(tab_file)
+        lang_frame.pack(side=tk.LEFT, padx=(30, 5))
+        tk.Label(lang_frame, text="Language:").pack(side=tk.LEFT)
+        self.lang_combo = ttk.Combobox(lang_frame, state="readonly", width=10,
+                                       values=list(translate_jp.LANGUAGES.values()))
+        self.lang_combo.set(translate_jp.LANGUAGES[self.lang])
+        self.lang_combo.pack(side=tk.LEFT)
+        self.lang_combo.bind("<<ComboboxSelected>>", self.on_language_selected)
         tk.Button(tab_edit, text="Undo", command=self.undo).pack(side=tk.LEFT)
         tk.Button(tab_edit, text="Redo", command=self.redo).pack(side=tk.LEFT)
 
@@ -380,7 +443,7 @@ class ImageEditor:
         for text, dx, dy, r, c in directions:
             btn = tk.Button(off_frame, text=text)
             btn.grid(row=r, column=c)
-            btn.bind("<ButtonPress-1>", lambda e, x=dx, y=dy: self.start_offset_loop(x, y))
+            btn.bind("<ButtonPress-1>", lambda e, x=dx, y=dy: self.begin_offset_loop(x, y))
             btn.bind("<ButtonRelease-1>", self.stop_offset_loop)
             btn.bind("<Leave>", self.stop_offset_loop)
         # --- Simutrans Config GUI ---
@@ -505,6 +568,55 @@ class ImageEditor:
         # self.canvas.bind("<Button-4>", self.on_linux_scroll_up)
         # self.canvas.bind("<Button-5>", self.on_linux_scroll_down)
 
+    # ================= Language =================
+    def tr(self, text):
+        return translate_jp.translate(text, self.lang)
+
+    def apply_language(self):
+        """Re-label every widget in the current language. Widgets are
+        created with English text; the first time a widget is seen its
+        English text is remembered, so switching back and forth always
+        translates from the original English, never from a translation."""
+        source = {}
+
+        def walk(w):
+            prev = self.i18n_source.get(w, {})
+            entry = {}
+            for opt in ("text", "label"):
+                if opt not in prev:
+                    try:
+                        cur = w.cget(opt)
+                    except tk.TclError:
+                        continue
+                    if not (isinstance(cur, str) and cur in translate_jp.JP):
+                        continue
+                    entry[opt] = cur
+                else:
+                    entry[opt] = prev[opt]
+                w.configure(**{opt: self.tr(entry[opt])})
+            if entry:
+                source[w] = entry
+            for child in w.winfo_children():
+                walk(child)
+
+        walk(self.root)
+        # destroyed widgets (e.g. old layer panel rows) drop out here
+        self.i18n_source = source
+
+        for tab_id, english in zip(self.notebook.tabs(), self.tab_names):
+            self.notebook.tab(tab_id, text=self.tr(english))
+        self.update_footer()
+
+    def on_language_selected(self, e=None):
+        name = self.lang_combo.get()
+        for code, label in translate_jp.LANGUAGES.items():
+            if label == name and code != self.lang:
+                self.lang = code
+                self.settings["language"] = code
+                save_settings(self.settings)
+                self.apply_language()
+                break
+
     def clear_selection(self, event=None):
         self.selection_rect = None
         self.selection_para_pts = None
@@ -588,17 +700,17 @@ class ImageEditor:
             return
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("New Canvas")
+        dialog.title(self.tr("New Canvas"))
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
 
-        tk.Label(dialog, text="Width:").grid(row=0, column=0, padx=6, pady=6, sticky="e")
+        tk.Label(dialog, text=self.tr("Width:")).grid(row=0, column=0, padx=6, pady=6, sticky="e")
         w_entry = tk.Entry(dialog, width=8)
         w_entry.insert(0, str(self.build_paksize))
         w_entry.grid(row=0, column=1, padx=6, pady=6)
 
-        tk.Label(dialog, text="Height:").grid(row=1, column=0, padx=6, pady=6, sticky="e")
+        tk.Label(dialog, text=self.tr("Height:")).grid(row=1, column=0, padx=6, pady=6, sticky="e")
         h_entry = tk.Entry(dialog, width=8)
         h_entry.insert(0, str(self.build_paksize))
         h_entry.grid(row=1, column=1, padx=6, pady=6)
@@ -612,10 +724,10 @@ class ImageEditor:
                 w = int(w_entry.get())
                 h = int(h_entry.get())
             except ValueError:
-                error_label.config(text="Width/Height must be integers")
+                error_label.config(text=self.tr("Width/Height must be integers"))
                 return
             if w <= 0 or h <= 0:
-                error_label.config(text="Width/Height must be positive")
+                error_label.config(text=self.tr("Width/Height must be positive"))
                 return
 
             self.width, self.height = w, h
@@ -639,7 +751,7 @@ class ImageEditor:
             self.redraw()
             dialog.destroy()
 
-        tk.Button(dialog, text="Create", command=create, bg="#d0ffd0").grid(
+        tk.Button(dialog, text=self.tr("Create"), command=create, bg="#d0ffd0").grid(
             row=3, column=0, columnspan=2, pady=8)
         w_entry.focus_set()
 
@@ -679,12 +791,12 @@ class ImageEditor:
 
         result = {"choice": "cancel"}
         dialog = tk.Toplevel(self.root)
-        dialog.title("Unsaved Changes")
+        dialog.title(self.tr("Unsaved Changes"))
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
 
-        tk.Label(dialog, text="You have unsaved changes.\nWhat would you like to do?",
+        tk.Label(dialog, text=self.tr("You have unsaved changes.\nWhat would you like to do?"),
                  justify="left", padx=16, pady=12).pack()
         btn_frame = tk.Frame(dialog)
         btn_frame.pack(pady=(0, 12), padx=12)
@@ -693,11 +805,11 @@ class ImageEditor:
             result["choice"] = c
             dialog.destroy()
 
-        tk.Button(btn_frame, text="Save", width=10,
+        tk.Button(btn_frame, text=self.tr("Save"), width=10,
                   command=lambda: choose("save")).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn_frame, text="Save As...", width=10,
+        tk.Button(btn_frame, text=self.tr("Save As..."), width=10,
                   command=lambda: choose("save_as")).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn_frame, text="Don't Save", width=10,
+        tk.Button(btn_frame, text=self.tr("Don't Save"), width=10,
                   command=lambda: choose("discard")).pack(side=tk.LEFT, padx=4)
 
         dialog.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
@@ -719,9 +831,7 @@ class ImageEditor:
     def merge_layer(self, mode="add"):
         if self.active_layer <= 0:
             return
-        import copy
-        self.undo_stack.append(("whole_layers", copy.deepcopy(self.layers), self.active_layer))
-        self.redo_stack.clear()
+        self.save_layers_undo()
 
         upper_idx = self.active_layer
         lower_idx = self.active_layer - 1
@@ -787,7 +897,6 @@ class ImageEditor:
 
         final_img = np.clip(merged_img, 0, 255).astype(np.uint8)
 
-        self.save_full_undo(lower_idx)
         self.layers[lower_idx] = {
             "img": final_img,
             "visible": True,
@@ -802,6 +911,7 @@ class ImageEditor:
     def add_layer(self):
         if not self.layers:
             return
+        self.save_layers_undo()
         self.layers.append({
             "img": np.zeros((self.height, self.width, 4), dtype=np.uint8),
             "visible": True
@@ -846,11 +956,14 @@ class ImageEditor:
             if idx == self.active_layer:
                 f.config(bg="#a0c0ff")
 
+        self.update_offset_ui()
+
     def delete_layer(self):
         if len(self.layers) <= 1:
             # only 1 layer, not delete it
             return
-        
+
+        self.save_layers_undo()
         self.layers.pop(self.active_layer)
         self.active_layer = max(0, self.active_layer - 1)
         self.refresh_layer_panel()
@@ -894,15 +1007,14 @@ class ImageEditor:
 
         new_layer = {
             "img": src["img"].copy(),
-            "visible": src["visible"]
+            "visible": src["visible"],
+            "off_x": src.get("off_x", 0),
+            "off_y": src.get("off_y", 0)
         }
 
+        self.save_layers_undo()
         insert_index = self.active_layer + 1
         self.layers.insert(insert_index, new_layer)
-
-        # Undo
-        self.undo_stack.append(("add_layer", insert_index))
-        self.redo_stack.clear()
 
         self.active_layer = insert_index
         self.refresh_layer_panel()
@@ -944,6 +1056,7 @@ class ImageEditor:
         import_img = Image.open(path).convert("RGBA")
         import_np = np.array(import_img, dtype=np.uint8)
 
+        self.save_layers_undo()
         self.layers.append({
             "img": import_np,
             "visible": True,
@@ -961,7 +1074,8 @@ class ImageEditor:
         layer = self.layers[self.active_layer]
         layer["off_x"] = layer.get("off_x", 0) + dx
         layer["off_y"] = layer.get("off_y", 0) + dy
-        
+
+        self.update_offset_ui()
         self.redraw()
     def save_layer(self,which):
         if not self.layers:
@@ -972,7 +1086,7 @@ class ImageEditor:
         
         layer_img = self.layers[which]["img"]
         path = filedialog.asksaveasfilename(
-            title="save No.{which} layer",
+            title=self.tr("Save layer {n}").format(n=which + 1),
             defaultextension=".png",
             filetypes=[("PNG", "*.png")],
             initialfile=f"layer_{which + 1}.png"
@@ -1122,9 +1236,11 @@ class ImageEditor:
             for layer in self.layers:
                 layer["img"] = change_image_paksize.change_paksize_program(layer["img"], old_pak, new_pak, 3)
             
-            self.width = int(self.width*new_pak/old_pak)
-            self.height = int(self.width*new_pak/old_pak)
+            # change_paksize_program keeps whole cells only
+            self.width = self.width // old_pak * new_pak
+            self.height = self.height // old_pak * new_pak
             self.build_paksize = new_pak
+            self.dirty = True
             self.build_entry.delete(0, tk.END)
             self.build_entry.insert(0, str(new_pak))
             
@@ -1136,7 +1252,7 @@ class ImageEditor:
             
         except ValueError:
             from tkinter import messagebox
-            messagebox.showerror("Error", "Valid paksize required")
+            messagebox.showerror(self.tr("Error"), self.tr("Valid paksize required"))
     def execute_rescale(self):
         try:
             new_pak = int(self.new_build_entry2.get())
@@ -1148,8 +1264,9 @@ class ImageEditor:
             for layer in self.layers:
                 layer["img"] = png_merge_for_simutrans.resize_program(layer["img"], old_pak, new_pak, 0,2)
             
-            self.width = int(self.width*new_pak/old_pak)
-            self.height = int(self.width*new_pak/old_pak)
+            self.width = self.width * new_pak // old_pak
+            self.height = self.height * new_pak // old_pak
+            self.dirty = True
             self.play_paksize = int(self.play_paksize*new_pak/old_pak)
             self.play_entry.delete(0, tk.END)
             self.play_entry.insert(0, str(self.play_paksize))
@@ -1168,7 +1285,7 @@ class ImageEditor:
             
         except ValueError:
             from tkinter import messagebox
-            messagebox.showerror("Error", "Valid paksize required")
+            messagebox.showerror(self.tr("Error"), self.tr("Valid paksize required"))
     def get_rect_points(self, x1, y1, x2, y2, mode):
         if mode == "box":
             return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
@@ -1589,6 +1706,7 @@ class ImageEditor:
         if not self.layers:
             return
         self.current_stroke = []
+        self.status_message = ""
 
         ix, iy = self.canvas_to_image(e.x, e.y)
         if self.tool == "move_paste" and self.floating_image is not None:
@@ -1731,6 +1849,13 @@ class ImageEditor:
             self.line_start = None
             self.redraw()
             return
+        if self.tool == "move" and self.layers and getattr(self, "drag_start_offset", None):
+            layer = self.layers[self.active_layer]
+            if (layer.get("off_x", 0), layer.get("off_y", 0)) != self.drag_start_offset:
+                self.undo_stack.append(("offset", self.active_layer) + self.drag_start_offset)
+                self.redo_stack.clear()
+            self.drag_start_offset = None
+            self.update_offset_ui()
         if self.tool == "select" and self.selection_rect:
             x1, y1, x2, y2 = self.selection_rect
             if x1 == x2 or y1 == y2:
@@ -2156,7 +2281,7 @@ class ImageEditor:
             rng = self.parse_rgb_text(self.replace_range_entry.get())
             alpha = max(0, min(255, int(self.replace_alpha_entry.get())))
         except ValueError:
-            messagebox.showerror("Error", "Colors/range must be 'R,G,B' or an integer, alpha 0-255")
+            messagebox.showerror(self.tr("Error"), self.tr("Colors/range must be 'R,G,B' or an integer, alpha 0-255"))
             return
 
         layer = self.layers[self.active_layer]
@@ -2172,12 +2297,13 @@ class ImageEditor:
                 layer["img"], orig, rng, new, alpha, self.special_color_list,
                 ignore_special=ignore_special)
         if not mask.any():
-            self.info.config(text="Color Replace: no pixels in range")
+            self.status_message = self.tr("Color Replace: no pixels in range")
+            self.update_footer()
             return
 
         self.save_full_undo(self.active_layer)
         layer["img"] = out
-        self.info.config(text=f"Color Replace: {int(mask.sum())} pixels updated")
+        self.status_message = self.tr("Color Replace: {n} pixels updated").format(n=int(mask.sum()))
         self.refresh_layer_panel()
         self.redraw()
 
@@ -2426,6 +2552,28 @@ class ImageEditor:
         
 
     # ================= Undo / Redo =================
+    def save_layers_undo(self):
+        """Snapshot the whole layer list (for actions that add, remove or
+        reorder layers, or change their sizes)."""
+        import copy
+        self.undo_stack.append(("whole_layers", copy.deepcopy(self.layers), self.active_layer))
+        self.redo_stack.clear()
+
+    def save_offset_undo(self, layer_idx):
+        layer = self.layers[layer_idx]
+        self.undo_stack.append(("offset", layer_idx, layer.get("off_x", 0), layer.get("off_y", 0)))
+        self.redo_stack.clear()
+
+    def _swap_offset(self, record):
+        """Apply an ("offset", idx, x, y) record and return the record that
+        reverts it."""
+        _, idx, x, y = record
+        layer = self.layers[idx]
+        reverse = ("offset", idx, layer.get("off_x", 0), layer.get("off_y", 0))
+        layer["off_x"], layer["off_y"] = x, y
+        self.active_layer = idx
+        return reverse
+
     def save_full_undo(self, layer_idx):
         img_copy = self.layers[layer_idx]["img"].copy()
         self.undo_stack.append({
@@ -2463,6 +2611,9 @@ class ImageEditor:
             self.layers[src], self.layers[dst] = self.layers[dst], self.layers[src]
             self.redo_stack.append(("move_layer", dst, src))
             self.active_layer = src
+
+        elif isinstance(stroke, tuple) and stroke[0] == "offset":
+            self.redo_stack.append(self._swap_offset(stroke))
 
 
         elif isinstance(stroke, list):
@@ -2505,6 +2656,10 @@ class ImageEditor:
             self.undo_stack.append(("move_layer", dst, src))
             self.active_layer = dst
 
+        # 4. offset
+        elif isinstance(stroke, tuple) and stroke[0] == "offset":
+            self.undo_stack.append(self._swap_offset(stroke))
+
         elif isinstance(stroke, list):
             undo_list = []
             for l, x, y, before in stroke:
@@ -2514,6 +2669,12 @@ class ImageEditor:
 
         self.refresh_layer_panel()
         self.redraw()
+    def begin_offset_loop(self, dx, dy):
+        # one undo record per button press, however long it is held
+        if self.layers:
+            self.save_offset_undo(self.active_layer)
+        self.start_offset_loop(dx, dy)
+
     def start_offset_loop(self, dx, dy):
         self.offset_layer(dx, dy)
         self.after_id = self.root.after(100, lambda: self.start_offset_loop(dx, dy))
@@ -2528,10 +2689,13 @@ class ImageEditor:
         try:
             new_x = int(self.off_x_entry.get())
             new_y = int(self.off_y_entry.get())
-            
+
             layer = self.layers[self.active_layer]
+            if (layer.get("off_x", 0), layer.get("off_y", 0)) != (new_x, new_y):
+                self.save_offset_undo(self.active_layer)
             layer["off_x"] = new_x
             layer["off_y"] = new_y
+            self.update_offset_ui()
             self.redraw()
         except ValueError:
             # no integer value, false
@@ -2797,22 +2961,21 @@ class ImageEditor:
 
     def update_footer(self):
         r, g, b, a = self.draw_color
+        t = self.tr
         pos = ""
         if self.cursor_x is not None:
-            pos = f"  Pos:({self.cursor_x},{self.cursor_y})"
-        self.info.config(
-            text=f"Tool:{self.tool}  Layer:{self.active_layer+1}/{len(self.layers)}  "
-                 f"RGBA({r},{g},{b},{a})  Zoom:{int(self.zoom*100)}%{pos}"
-        )
+            pos = f"  {t('Pos')}:({self.cursor_x},{self.cursor_y})"
         ox, oy = 0, 0
         if self.layers:
             layer = self.layers[self.active_layer]
             ox, oy = layer.get("off_x", 0), layer.get("off_y", 0)
+        tool = t(self.TOOL_NAMES.get(self.tool, self.tool))
+        msg = f"  |  {self.status_message}" if self.status_message else ""
 
         self.info.config(
-            text=f"Tool:{self.tool}  Layer:{self.active_layer+1}/{len(self.layers)}  "
-                 f"RGBA({r},{g},{b},{a})  Zoom:{int(self.zoom*100)}%  "
-                 f"Offset:({ox},{oy}){pos}"
+            text=f"{t('Tool')}:{tool}  {t('Layer')}:{self.active_layer+1}/{len(self.layers)}  "
+                 f"RGBA({r},{g},{b},{a})  {t('Zoom')}:{int(self.zoom*100)}%  "
+                 f"{t('Offset')}:({ox},{oy}){pos}{msg}"
         )
 
 
