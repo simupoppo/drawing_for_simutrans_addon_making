@@ -10,3 +10,4 @@ This is the png file edditing app. for making simutrans addon.
 - 2026.02.20 release v0.5 add rectangle
 - 2026.03.02 release v0.6 add polygon fill & select
 - 2026.10.03 release v0.7 add replace colors
+- 2026.10.04 release v1.0 add Translation to Japanese, add wiki
